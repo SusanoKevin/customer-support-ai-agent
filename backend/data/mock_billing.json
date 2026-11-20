@@ -1,0 +1,16 @@
+{
+  "charges": [
+    {"charge_id": "ch_m1", "user_id": "u_1001", "invoice_id": "in_m1", "invoice_period": "2026-11", "amount_usd": 87.0, "billed_at": "2026-11-05", "description": "Pro, 3 seats", "payment_method": {"brand": "visa", "last4": "4242", "status": "active"}},
+    {"charge_id": "ch_m0", "user_id": "u_1001", "invoice_id": "in_m0", "invoice_period": "2026-10", "amount_usd": 87.0, "billed_at": "2026-10-05", "description": "Pro, 3 seats", "payment_method": {"brand": "visa", "last4": "4242", "status": "active"}},
+    {"charge_id": "ch_d1", "user_id": "u_1002", "invoice_id": "in_d1", "invoice_period": "2026-11", "amount_usd": 1450.0, "billed_at": "2026-11-01", "description": "Enterprise seat add-ons", "payment_method": {"brand": "amex", "last4": "1881", "status": "expired"}},
+    {"charge_id": "ch_d2", "user_id": "u_1002", "invoice_id": "in_d2", "invoice_period": "2026-11", "amount_usd": 240.0, "billed_at": "2026-11-12", "description": "Enterprise audit log add-on", "payment_method": {"brand": "amex", "last4": "1881", "status": "expired"}},
+    {"charge_id": "ch_d3", "user_id": "u_1002", "invoice_id": "in_d3", "invoice_period": "2026-11", "amount_usd": 240.0, "billed_at": "2026-11-12", "description": "Enterprise audit log add-on", "payment_method": {"brand": "amex", "last4": "1881", "status": "expired"}},
+    {"charge_id": "ch_l1", "user_id": "u_1004", "invoice_id": "in_l1", "invoice_period": "2026-11", "amount_usd": 87.0, "billed_at": "2026-11-05", "description": "Pro, 3 seats", "payment_method": {"brand": "mastercard", "last4": "5150", "status": "active"}}
+  ],
+  "refunds": [
+    {"refund_id": "rf_m0", "charge_id": "ch_m0", "user_id": "u_1001", "amount_usd": 30.0, "reason": "Approved by billing: partial refund for October outage", "kind": "human_approved", "status": "succeeded", "created_at": "2026-11-16", "reference": "74512345678901234567890", "failure_reason": null, "idempotency_key": null},
+    {"refund_id": "rf_d0", "charge_id": "ch_d1", "user_id": "u_1002", "amount_usd": 290.0, "reason": "Approved by account manager: unused seats", "kind": "human_approved", "status": "failed", "created_at": "2026-11-03", "reference": null, "failure_reason": "expired_or_canceled_card", "idempotency_key": null}
+  ],
+  "disputes": [],
+  "subscriptions": []
+}

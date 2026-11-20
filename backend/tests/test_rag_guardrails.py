@@ -13,7 +13,7 @@ def _chunk(cid: str, sim: float) -> Chunk:
 
 def test_chunking_splits_on_headings_and_reads_tier_tags():
     chunks = chunk_markdown("refunds", (POLICIES / "refunds.md").read_text())
-    assert len(chunks) == 4
+    assert len(chunks) == 10
     pro = next(c for c in chunks if c.heading == "Pro tier refund limits")
     assert pro.tiers == ("pro",)
     assert "Tiers:" not in pro.text

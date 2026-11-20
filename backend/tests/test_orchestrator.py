@@ -1,0 +1,295 @@
+"""End-to-end turns through the state machine with a scripted model, a fake retriever, and seed billing data.
+
+Scenario ids refer to docs/test_scenarios.md. No test calls Gemini or the database.
+"""
+
+import random
+from datetime import date
+
+from app.agent import templates
+from app.agent.deps import Deps
+from app.agent.llm import Classification, LLMError
+from app.agent.orchestrator import run_turn
+from app.agent.sessions import InMemorySessionStore
+from app.config import Settings
+from app.events import DoneEvent, ErrorEvent, EscalationEvent, Event, StatusEvent, TokenEvent, ToolEvent
+from app.rag.retriever import Chunk
+from app.tools.billing import load_billing
+from app.tools.stores import InMemoryRefundLedger, InMemoryTicketStore
+
+TODAY = date(2026, 11, 19)
+MAYA = {"email": "maya@example.com", "last4": "4242"}
+DEV = {"email": "dev@example.com", "last4": "1881"}
+LEE = {"email": "lee@example.com", "last4": "5150"}
+ANSWER = "Here is what I found [refunds:1:0]."
+
+
+def _chunk(chunk_id: str, similarity: float = 0.72) -> Chunk:
+    return Chunk(chunk_id=chunk_id, doc=chunk_id.split(":")[0], heading="h", text="policy text",
+                 tiers=("free", "pro", "enterprise"), similarity=similarity)
+
+
+class FakeRetriever:
+    def __init__(self, similarity: float = 0.72) -> None:
+        self.similarity = similarity
+        self.tiers: list[str | None] = []
+
+    async def search(self, query: str, tier: str | None, top_k: int) -> list[Chunk]:
+        self.tiers.append(tier)
+        return [_chunk("refunds:1:0", self.similarity), _chunk("refunds:0:0", self.similarity - 0.02)]
+
+
+class FakeLLM:
+    def __init__(self, script: list[Classification], answers: list[str] | None = None,
+                 classify_error: LLMError | None = None) -> None:
+        self.script = list(script)
+        self.answers = list(answers or [])
+        self.classify_error = classify_error
+
+    async def classify(self, message: str, recent_turns: str) -> Classification:
+        if self.classify_error is not None:
+            raise self.classify_error
+        return self.script.pop(0)
+
+    async def generate(self, system: str, prompt: str) -> str:
+        return self.answers.pop(0) if self.answers else ANSWER
+
+
+def C(intent: str, **fields) -> Classification:
+    return Classification(intent=intent, search_query=fields.pop("search_query", "refund policy"), **fields)
+
+
+def make_deps(*script: Classification, answers=None, failure_rate=0.0, retriever=None, classify_error=None) -> Deps:
+    records = load_billing()
+    return Deps(
+        llm=FakeLLM(list(script), answers, classify_error), retriever=retriever or FakeRetriever(), records=records,
+        ledger=InMemoryRefundLedger(records.refunds), tickets=InMemoryTicketStore(), sessions=InMemorySessionStore(),
+        settings=Settings(_env_file=None, simulate_tool_failure_rate=failure_rate),
+        today=lambda: TODAY, rng=random.Random(0), retry_delay_s=0,
+    )
+
+
+async def turn(deps: Deps, sid: str = "session-0001") -> list[Event]:
+    events = [e async for e in run_turn(sid, "customer message", deps)]
+    assert isinstance(events[-1], DoneEvent)  # G6
+    return events
+
+
+def tools(events: list[Event]) -> list[str]:
+    return [e.name for e in events if isinstance(e, ToolEvent)]
+
+
+def tool(events: list[Event], name: str) -> ToolEvent:
+    return next(e for e in events if isinstance(e, ToolEvent) and e.name == name)
+
+
+def escalation(events: list[Event]) -> EscalationEvent | None:
+    return next((e for e in events if isinstance(e, EscalationEvent)), None)
+
+
+def text(events: list[Event]) -> str:
+    return "".join(e.text for e in events if isinstance(e, TokenEvent))
+
+
+def agent_refunds(deps: Deps, user_id: str = "u_1001") -> list:
+    return [r for r in deps.ledger.refunds_for(user_id) if r.kind == "agent"]
+
+
+# --- refunds ----------------------------------------------------------------
+
+async def test_pro_refund_within_limit_runs_the_full_tool_chain():  # S1.1
+    deps = make_deps(C("refund_request", amount_usd=30, **MAYA))
+    events = await turn(deps)
+    assert tools(events) == ["verify_account", "retrieve_policy", "lookup_charges", "issue_refund"]
+    assert tool(events, "issue_refund").ok
+    assert text(events) == ANSWER
+    assert [r.amount_usd for r in agent_refunds(deps)] == [30.0]
+    assert escalation(events) is None
+
+
+async def test_request_waits_for_identity_then_continues():  # S1.1, identity given second
+    deps = make_deps(C("refund_request", amount_usd=30), C("provide_identity", **MAYA))
+    first = await turn(deps)
+    assert text(first) == templates.ASK_IDENTITY and tools(first) == []
+    second = await turn(deps)
+    assert tool(second, "issue_refund").ok
+
+
+async def test_over_limit_becomes_a_normal_priority_ticket():  # S1.2
+    deps = make_deps(C("refund_request", amount_usd=80, **MAYA))
+    events = await turn(deps)
+    esc = escalation(events)
+    assert (esc.reason, esc.priority) == ("over_tier_limit", "normal")
+    assert esc.ticket_id in text(events)
+    assert agent_refunds(deps) == []
+
+
+async def test_injected_500_refund_is_declined_against_the_charge():  # S8.1
+    deps = make_deps(C("refund_request", amount_usd=500, **MAYA))
+    events = await turn(deps)
+    assert tool(events, "issue_refund").output["reason"] == "over_remaining_amount"
+    assert agent_refunds(deps) == []  # G1
+
+
+async def test_claimed_enterprise_tier_still_gets_the_pro_limit():  # S8.2
+    deps = make_deps(C("refund_request", amount_usd=70, **MAYA))
+    events = await turn(deps)
+    assert tool(events, "issue_refund").output["limit_usd"] == 50.0
+    assert escalation(events).reason == "over_tier_limit"
+    assert agent_refunds(deps) == []
+
+
+async def test_split_request_is_caught_on_the_second_turn():  # S8.3
+    deps = make_deps(C("refund_request", amount_usd=40, **MAYA), C("refund_request", amount_usd=40))
+    assert tool(await turn(deps), "issue_refund").ok
+    second = await turn(deps)
+    assert escalation(second).reason == "over_tier_limit"
+    assert len(agent_refunds(deps)) == 1
+
+
+async def test_charge_outside_window_goes_to_review():  # S3.2
+    deps = make_deps(C("refund_request", amount_usd=20, charge_ref="October", **MAYA))
+    assert escalation(await turn(deps)).reason == "outside_refund_window"
+
+
+async def test_unknown_invoice_lists_only_the_customers_own_charges():  # S4.1
+    deps = make_deps(C("refund_request", amount_usd=20, charge_ref="in_d1", **MAYA))
+    reply = text(await turn(deps))
+    assert "in_m1" in reply
+    assert "in_d1" not in reply and "in_d2" not in reply
+
+
+# --- billing disputes -------------------------------------------------------
+
+async def test_verified_duplicate_is_escalated_without_refunding():  # S2.1b
+    deps = make_deps(C("billing_dispute", **DEV))
+    events = await turn(deps)
+    esc = escalation(events)
+    assert (esc.reason, esc.priority) == ("duplicate_charge", "high")
+    assert "issue_refund" not in tools(events)
+
+
+async def test_customer_insisting_against_records_escalates_on_second_pushback():  # S2.2
+    deps = make_deps(C("billing_dispute", **MAYA),
+                     C("billing_dispute", disputes_previous_answer=True),
+                     C("billing_dispute", disputes_previous_answer=True))
+    assert escalation(await turn(deps)) is None
+    assert escalation(await turn(deps)) is None
+    third = await turn(deps)
+    assert escalation(third).reason == "charge_dispute_unresolved"
+    assert agent_refunds(deps) == []
+
+
+# --- refund status ----------------------------------------------------------
+
+async def test_recent_refund_is_explained_not_reissued():  # S6.1
+    deps = make_deps(C("refund_status", **MAYA))
+    events = await turn(deps)
+    assert "get_refund_status" in tools(events)
+    assert escalation(events) is None
+    assert agent_refunds(deps) == []
+
+
+async def test_failed_refund_goes_to_a_person():  # S6.3
+    deps = make_deps(C("refund_status", **DEV))
+    esc = escalation(await turn(deps))
+    assert (esc.reason, esc.priority) == ("refund_failed", "high")
+
+
+# --- identity and account state ---------------------------------------------
+
+async def test_three_failed_verifications_escalate_and_mask_digits():  # S7.1
+    wrong = [C("refund_request", email="maya@example.com", last4=d) for d in ("1111", "2222", "3333")]
+    deps = make_deps(*wrong)
+    first = await turn(deps)
+    assert text(first) == templates.IDENTITY_NOT_VERIFIED
+    assert tool(first, "verify_account").input["last4"] == "****"
+    await turn(deps)
+    third = await turn(deps)
+    assert escalation(third).reason == "identity_not_verified"
+    assert "issue_refund" not in tools(third)
+
+
+async def test_suspended_contract_routes_to_a_person():  # S7.2
+    deps = make_deps(C("refund_request", amount_usd=20, **LEE))
+    events = await turn(deps)
+    assert escalation(events).reason == "contract_not_active"
+    assert "issue_refund" not in tools(events)
+
+
+# --- human handoff ----------------------------------------------------------
+
+async def test_asking_for_a_person_escalates_immediately():  # S9.1
+    deps = make_deps(C("wants_human"))
+    events = await turn(deps)
+    assert escalation(events).reason == "customer_requested_human"
+    assert tools(events) == ["create_ticket"]
+
+
+async def test_open_ticket_blocks_refund_actions_but_not_questions():  # S9.2, S9.3
+    deps = make_deps(C("refund_request", amount_usd=80, **MAYA),
+                     C("refund_request", amount_usd=50),
+                     C("policy_question", search_query="seats"))
+    ticket_id = escalation(await turn(deps)).ticket_id
+    blocked = await turn(deps)
+    assert text(blocked) == templates.awaiting_human(ticket_id)
+    assert tools(blocked) == []
+    question = await turn(deps)
+    assert text(question) == ANSWER
+
+
+# --- guardrails and failures ------------------------------------------------
+
+async def test_uncited_answer_is_regenerated_once_then_escalated():
+    deps = make_deps(C("policy_question"), answers=["No citation here.", "Still none."])
+    events = await turn(deps)
+    assert escalation(events).reason == "uncited_answer"
+    assert "No citation" not in text(events)
+
+
+async def test_uncited_first_draft_is_replaced_by_a_cited_one():
+    deps = make_deps(C("policy_question"), answers=["No citation here.", ANSWER])
+    assert text(await turn(deps)) == ANSWER
+
+
+async def test_low_retrieval_confidence_escalates():
+    deps = make_deps(C("policy_question"), retriever=FakeRetriever(similarity=0.4))
+    assert escalation(await turn(deps)).reason == "low_retrieval_confidence"
+
+
+async def test_unverified_questions_search_every_tier():
+    deps = make_deps(C("policy_question"))
+    await turn(deps)
+    assert deps.retriever.tiers == [None]
+
+
+async def test_out_of_scope_gets_a_fixed_reply_and_no_ticket():
+    deps = make_deps(C("out_of_scope"))
+    events = await turn(deps)
+    assert text(events) == templates.OUT_OF_SCOPE
+    assert escalation(events) is None and tools(events) == []
+
+
+async def test_tool_outage_escalates_and_never_claims_a_refund():  # S10.2
+    deps = make_deps(C("refund_request", amount_usd=30, **MAYA), failure_rate=1.0)
+    events = await turn(deps)
+    assert any(isinstance(e, ErrorEvent) and e.retryable for e in events)
+    assert escalation(events).reason == "tool_failure"
+    assert "refunded" not in text(events).lower()
+    assert agent_refunds(deps) == []
+
+
+async def test_model_rate_limit_ends_the_turn_cleanly():  # S10.5
+    deps = make_deps(classify_error=LLMError("429", retryable=True, code="rate_limited"))
+    events = await turn(deps)
+    assert any(isinstance(e, ErrorEvent) and e.code == "rate_limited" for e in events)
+    assert text(events) == templates.MODEL_UNAVAILABLE
+
+
+async def test_every_started_step_completes_or_fails():
+    deps = make_deps(C("refund_request", amount_usd=30, **MAYA))
+    events = await turn(deps)
+    started = [e.step for e in events if isinstance(e, StatusEvent) and e.state == "started"]
+    finished = [e.step for e in events if isinstance(e, StatusEvent) and e.state in ("completed", "failed")
+                and e.step in started]
+    assert started == finished

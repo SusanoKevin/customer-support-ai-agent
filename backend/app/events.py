@@ -5,6 +5,7 @@ from typing import Any, ClassVar, Literal
 from pydantic import BaseModel, ConfigDict
 
 StepState = Literal["started", "completed", "failed"]
+Priority = Literal["low", "normal", "high"]
 
 
 class Event(BaseModel):
@@ -40,6 +41,7 @@ class EscalationEvent(Event):
     event = "escalation"
     reason: str
     ticket_id: str | None
+    priority: Priority | None = None
 
 
 class TraceEvent(Event):

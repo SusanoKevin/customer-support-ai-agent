@@ -1,57 +1,68 @@
-"""Agent state machine. See PLAN.md for the state diagram.
+"""Agent state machine runner: one customer message in, a stream of events out.
 
-Day 2: implement one function per Node. Each takes AgentState and returns a new
-state (dataclasses.replace) plus the events to emit.
+Nodes live in `nodes.py`. This module loads the session, runs nodes until END, emits
+status and trace events around each one, enforces the step limit, and saves the session.
 """
 
-from collections.abc import AsyncIterator
-from dataclasses import dataclass
-from enum import StrEnum
-from typing import Any
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import replace
 
-from app.events import Event
-from app.rag.retriever import Chunk
-from app.tools.accounts import Account
+from app.agent import nodes, templates
+from app.agent.deps import Deps
+from app.agent.llm import LLMError
+from app.agent.state import STATUS_LABELS, AgentState, Node, finish_turn, start_turn
+from app.events import DoneEvent, ErrorEvent, Event, StatusEvent, TraceEvent
 
+NodeFn = Callable[[AgentState, Deps], Awaitable[nodes.Step]]
 
-class Node(StrEnum):
-    CLASSIFY_INTENT = "classify_intent"
-    VERIFY_ACCOUNT = "verify_account"
-    RETRIEVE_POLICY = "retrieve_policy"
-    DECIDE_ACTION = "decide_action"
-    ISSUE_REFUND = "issue_refund"
-    CREATE_TICKET = "create_ticket"
-    RESPOND = "respond"
-    ESCALATE = "escalate"
-    END = "end"
-
-
-STATUS_LABELS: dict[Node, str] = {
-    Node.CLASSIFY_INTENT: "Understanding your request...",
-    Node.VERIFY_ACCOUNT: "Verifying Account Tier...",
-    Node.RETRIEVE_POLICY: "Searching Knowledge Base...",
-    Node.DECIDE_ACTION: "Checking policy limits...",
-    Node.ISSUE_REFUND: "Processing refund...",
-    Node.CREATE_TICKET: "Creating support ticket...",
-    Node.RESPOND: "Writing response...",
-    Node.ESCALATE: "Connecting you to a human...",
+NODES: dict[Node, NodeFn] = {
+    Node.CLASSIFY_INTENT: nodes.classify_intent,
+    Node.VERIFY_ACCOUNT: nodes.verify_account_node,
+    Node.RETRIEVE_POLICY: nodes.retrieve_policy_node,
+    Node.DECIDE_ACTION: nodes.decide_action,
+    Node.ISSUE_REFUND: nodes.issue_refund_node,
+    Node.ESCALATE: nodes.escalate_node,
+    Node.RESPOND: nodes.respond,
 }
+# Escalating and responding always get to run, so a long turn still ends with a handoff.
+ALWAYS_RUN = frozenset({Node.ESCALATE, Node.RESPOND})
+HARD_STOP_EXTRA_STEPS = 3
 
 
-@dataclass(frozen=True)
-class AgentState:
-    session_id: str
-    user_message: str
-    history: tuple[dict[str, str], ...] = ()
-    account: Account | None = None
-    chunks: tuple[Chunk, ...] = ()
-    tool_results: tuple[dict[str, Any], ...] = ()
-    escalation_reason: str | None = None
-    steps_taken: int = 0
-    node: Node = Node.CLASSIFY_INTENT
+def _guard_steps(state: AgentState, max_steps: int) -> AgentState:
+    if state.node == Node.END:
+        return state
+    if state.steps_taken >= max_steps + HARD_STOP_EXTRA_STEPS:
+        return replace(state, node=Node.END, reply=state.reply or templates.MODEL_UNAVAILABLE)
+    if state.steps_taken >= max_steps and state.node not in ALWAYS_RUN:
+        return replace(state, node=Node.ESCALATE, escalation_reason="max_steps")
+    return state
 
 
-async def run_turn(state: AgentState) -> AsyncIterator[Event]:
-    """Drive the state machine until END or AGENT_MAX_STEPS. TODO Day 2."""
-    raise NotImplementedError
-    yield  # makes this an async generator so the signature is already final
+async def run_turn(session_id: str, message: str, deps: Deps) -> AsyncIterator[Event]:
+    state = start_turn(deps.sessions.get(session_id) or AgentState(session_id=session_id), message)
+    while True:
+        state = _guard_steps(state, deps.settings.agent_max_steps)
+        if state.node == Node.END:
+            break
+        node = state.node
+        label = STATUS_LABELS[node]
+        yield StatusEvent(step=node, state="started", label=label)
+        started = time.perf_counter()
+        try:
+            step = await NODES[node](state, deps)
+        except LLMError as exc:
+            yield StatusEvent(step=node, state="failed", label=label)
+            yield ErrorEvent(code=exc.code, message="The assistant is temporarily unavailable", retryable=exc.retryable)
+            state = replace(state, node=Node.RESPOND, reply=templates.MODEL_UNAVAILABLE,
+                            steps_taken=state.steps_taken + 1)
+            continue
+        for event in step.events:
+            yield event
+        yield StatusEvent(step=node, state="completed", label=label)
+        yield TraceEvent(step=node, latency_ms=round((time.perf_counter() - started) * 1000, 1))
+        state = replace(step.state, steps_taken=step.state.steps_taken + 1)
+
+    deps.sessions.save(finish_turn(state, state.reply or ""))
+    yield DoneEvent(session_id=session_id)

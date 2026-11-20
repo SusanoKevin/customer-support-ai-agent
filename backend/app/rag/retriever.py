@@ -12,7 +12,7 @@ SEARCH_SQL = """
     select chunk_id, doc, heading, text, tiers,
            1 - (embedding <=> %(q)s) as similarity
     from chunks
-    where %(tier)s = any(tiers)
+    where %(tier)s::text is null or %(tier)s = any(tiers)
     order by embedding <=> %(q)s
     limit %(k)s
 """
@@ -32,7 +32,9 @@ class Chunk:
 
 
 class Retriever(Protocol):
-    async def search(self, query: str, tier: str, top_k: int) -> list[Chunk]: ...
+    """`tier=None` searches every tier (used before the customer is verified)."""
+
+    async def search(self, query: str, tier: str | None, top_k: int) -> list[Chunk]: ...
 
 
 class PgVectorRetriever:
@@ -40,7 +42,7 @@ class PgVectorRetriever:
         self._pool = pool
         self._embedder = embedder
 
-    async def search(self, query: str, tier: str, top_k: int) -> list[Chunk]:
+    async def search(self, query: str, tier: str | None, top_k: int) -> list[Chunk]:
         if not query.strip():
             return []
         [vector] = await self._embedder.embed([query], task="RETRIEVAL_QUERY")

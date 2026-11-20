@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", frozen=True)
 
     gemini_api_key: str = ""
-    gemini_chat_model: str = "gemini-flash-latest"
+    gemini_chat_model: str = "gemini-2.5-flash"
     gemini_live_model: str = ""
     gemini_embed_model: str = "gemini-embedding-001"
     embed_dim: int = Field(default=768, ge=64, le=3072)  # must match vector(768) in db/schema.sql

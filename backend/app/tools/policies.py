@@ -4,7 +4,7 @@ from app.rag.retriever import Retriever
 from app.tools.base import ToolResult
 
 
-async def retrieve_policy(retriever: Retriever, query: str, tier: str, top_k: int = 4) -> ToolResult:
+async def retrieve_policy(retriever: Retriever, query: str, tier: str | None, top_k: int = 4) -> ToolResult:
     chunks = await retriever.search(query=query, tier=tier, top_k=top_k)
     return ToolResult(
         ok=bool(chunks),
