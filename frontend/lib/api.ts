@@ -34,3 +34,44 @@ export async function* streamChat(sessionId: string, message: string, signal?: A
     yield* parser.push(value);
   }
 }
+
+export interface VoiceToken {
+  token: string;
+  model: string;
+  expiresAt: string;
+}
+
+async function errorFrom(response: Response): Promise<ChatRequestError> {
+  const fallbackRetryable = response.status === 429 || response.status >= 500;
+  try {
+    const body = (await response.json()) as { detail?: { message?: unknown; retryable?: unknown } };
+    const { message, retryable } = body.detail ?? {};
+    if (typeof message === "string") {
+      return new ChatRequestError(message, typeof retryable === "boolean" ? retryable : fallbackRetryable);
+    }
+  } catch {
+    // Not JSON: fall through to the generic message.
+  }
+  return new ChatRequestError(`Voice couldn't start (error ${response.status}).`, fallbackRetryable);
+}
+
+/** Asks the backend for a single-use Live token. The real API key never reaches the browser. */
+export async function fetchVoiceToken(sessionId: string, signal?: AbortSignal): Promise<VoiceToken> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/voice/token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId }),
+      signal,
+    });
+  } catch {
+    throw new ChatRequestError("Could not reach the support service. Check your connection and try again.", true);
+  }
+  if (!response.ok) throw await errorFrom(response);
+  const body = (await response.json()) as { token?: unknown; model?: unknown; expires_at?: unknown };
+  if (typeof body.token !== "string" || typeof body.model !== "string") {
+    throw new ChatRequestError("Voice couldn't start. Please try again.", true);
+  }
+  return { token: body.token, model: body.model, expiresAt: String(body.expires_at ?? "") };
+}

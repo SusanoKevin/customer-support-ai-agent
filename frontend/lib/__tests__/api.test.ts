@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ChatRequestError, streamChat } from "../api";
+import { ChatRequestError, fetchVoiceToken, streamChat } from "../api";
 import { failTurn, initialConversation, startTurn } from "../conversation";
 import type { AgentEvent } from "../events";
 
@@ -59,5 +59,48 @@ describe("failTurn", () => {
     const state = failTurn(startTurn(initialConversation(), "Hi"), error);
     expect(state.busy).toBe(false);
     expect(state.messages[1].error?.message).toBe("Offline");
+  });
+});
+
+describe("fetchVoiceToken", () => {
+  it("posts the session id and returns the token and model", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({ token: "auth_tokens/x", model: "gemini-3.8-live", expires_at: "t1", new_session_expires_at: "t0" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const token = await fetchVoiceToken("s-12345678");
+
+    expect(token).toEqual({ token: "auth_tokens/x", model: "gemini-3.8-live", expiresAt: "t1" });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toMatch(/\/api\/voice\/token$/);
+    expect(JSON.parse(init.body)).toEqual({ session_id: "s-12345678" });
+  });
+
+  it("uses the server's message and retry flag on a 503", async () => {
+    const body = { detail: { message: "Voice isn't available on this server.", retryable: false } };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(body, { status: 503 })));
+
+    await expect(fetchVoiceToken("s-12345678")).rejects.toMatchObject({
+      message: "Voice isn't available on this server.",
+      retryable: false,
+    });
+  });
+
+  it("falls back to a generic message when the error body is not JSON", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("oops", { status: 500 })));
+    const error = await fetchVoiceToken("s-12345678").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ChatRequestError);
+    expect(error).toMatchObject({ retryable: true });
+  });
+
+  it("reports a network failure as retryable", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+    await expect(fetchVoiceToken("s-12345678")).rejects.toMatchObject({ retryable: true });
+  });
+
+  it("rejects a reply without a token", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ model: "m" })));
+    await expect(fetchVoiceToken("s-12345678")).rejects.toMatchObject({ retryable: true });
   });
 });

@@ -11,6 +11,7 @@ from app.config import Settings
 from app.rag.retriever import Retriever
 from app.tools.billing import BillingRecords
 from app.tools.stores import RefundLedger, TicketStore
+from app.voice import VoiceTokenIssuer
 
 
 @dataclass(frozen=True)
@@ -25,3 +26,4 @@ class Deps:
     today: Callable[[], date] = date.today
     rng: random.Random = field(default_factory=random.Random)
     retry_delay_s: float = 0.3
+    voice: VoiceTokenIssuer | None = None  # None = voice disabled (no key or no Live model)

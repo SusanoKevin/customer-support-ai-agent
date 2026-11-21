@@ -6,6 +6,9 @@ import { getServerSessionId, getSessionId, resetSessionId, subscribeSessionId } 
 import { Composer } from "./chat/Composer";
 import { MessageBubble } from "./chat/MessageBubble";
 import { TraceDrawer } from "./observability/TraceDrawer";
+import { VoicePanel } from "./voice/VoicePanel";
+
+type Mode = "chat" | "voice";
 
 const SUGGESTIONS = [
   "What is your refund policy for Pro plans?",
@@ -18,6 +21,7 @@ export function SupportConsole() {
   const [conversation, setConversation] = useState<Conversation>(initialConversation);
   const sessionId = useSyncExternalStore(subscribeSessionId, getSessionId, getServerSessionId);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [mode, setMode] = useState<Mode>("chat");
   const abortRef = useRef<AbortController | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -66,6 +70,7 @@ export function SupportConsole() {
           <p className="truncate text-xs text-muted">Billing, refunds and plans. A person can take over at any time.</p>
         </div>
         <div className="ml-auto flex shrink-0 gap-2">
+          <ModeSwitch mode={mode} onChange={setMode} />
           <button onClick={resetSession} className="rounded-lg border border-line px-3 py-1.5 text-xs hover:bg-surface-2">
             New session
           </button>
@@ -81,25 +86,31 @@ export function SupportConsole() {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <main className="flex min-w-0 flex-1 flex-col">
-          <div className="flex-1 overflow-y-auto">
-            <div className="mx-auto flex max-w-2xl flex-col gap-4 px-4 py-6">
-              {conversation.messages.length === 0 && <EmptyState onPick={send} isDisabled={!sessionId} />}
-              {conversation.messages.map((m, i) => (
-                <MessageBubble
-                  key={m.id}
-                  message={m}
-                  live={conversation.busy && i === lastIndex}
-                  onRetry={i === lastIndex && !conversation.busy ? retry : undefined}
-                />
-              ))}
-              <div ref={endRef} />
+        {mode === "voice" ? (
+          <main className="flex min-w-0 flex-1 flex-col">
+            <VoicePanel key={sessionId} sessionId={sessionId} />
+          </main>
+        ) : (
+          <main className="flex min-w-0 flex-1 flex-col">
+            <div className="flex-1 overflow-y-auto">
+              <div className="mx-auto flex max-w-2xl flex-col gap-4 px-4 py-6">
+                {conversation.messages.length === 0 && <EmptyState onPick={send} isDisabled={!sessionId} />}
+                {conversation.messages.map((m, i) => (
+                  <MessageBubble
+                    key={m.id}
+                    message={m}
+                    live={conversation.busy && i === lastIndex}
+                    onRetry={i === lastIndex && !conversation.busy ? retry : undefined}
+                  />
+                ))}
+                <div ref={endRef} />
+              </div>
             </div>
-          </div>
-          <div className="mx-auto w-full max-w-2xl">
-            <Composer disabled={conversation.busy || !sessionId} onSend={send} />
-          </div>
-        </main>
+            <div className="mx-auto w-full max-w-2xl">
+              <Composer disabled={conversation.busy || !sessionId} onSend={send} />
+            </div>
+          </main>
+        )}
 
         <aside
           id="trace-drawer"
@@ -108,6 +119,23 @@ export function SupportConsole() {
           <TraceDrawer turns={conversation.turns} session={sessionTotals(conversation)} sessionId={sessionId} />
         </aside>
       </div>
+    </div>
+  );
+}
+
+function ModeSwitch({ mode, onChange }: { mode: Mode; onChange: (mode: Mode) => void }) {
+  return (
+    <div role="group" aria-label="Mode" className="flex rounded-lg border border-line p-0.5 text-xs">
+      {(["chat", "voice"] as const).map((m) => (
+        <button
+          key={m}
+          onClick={() => onChange(m)}
+          aria-pressed={mode === m}
+          className={`rounded-md px-3 py-1 capitalize ${mode === m ? "bg-accent text-on-accent" : "hover:bg-surface-2"}`}
+        >
+          {m}
+        </button>
+      ))}
     </div>
   );
 }
