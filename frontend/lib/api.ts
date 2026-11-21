@@ -27,9 +27,8 @@ export async function* streamChat(sessionId: string, message: string, signal?: A
   } catch {
     throw new ChatRequestError("Could not reach the support service. Check your connection and try again.", true);
   }
-  if (!response.ok || !response.body) {
-    throw new ChatRequestError(`The support service returned ${response.status}.`, isRetryableStatus(response.status));
-  }
+  if (!response.ok) throw await errorFrom(response, `The support service returned ${response.status}.`);
+  if (!response.body) throw new ChatRequestError("The support service sent an empty reply.", true);
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
   const parser = new SseParser();
   while (true) {
@@ -45,7 +44,8 @@ export interface VoiceToken {
   expiresAt: string;
 }
 
-async function errorFrom(response: Response): Promise<ChatRequestError> {
+/** Uses the server's `detail.message` (rate limits, voice errors) when there is one. */
+async function errorFrom(response: Response, fallback: string): Promise<ChatRequestError> {
   const fallbackRetryable = isRetryableStatus(response.status);
   try {
     const body = (await response.json()) as { detail?: { message?: unknown; retryable?: unknown } };
@@ -56,7 +56,7 @@ async function errorFrom(response: Response): Promise<ChatRequestError> {
   } catch {
     // Not JSON: fall through to the generic message.
   }
-  return new ChatRequestError(`Voice couldn't start (error ${response.status}).`, fallbackRetryable);
+  return new ChatRequestError(fallback, fallbackRetryable);
 }
 
 /** Asks the backend for a single-use Live token. The real API key never reaches the browser. */
@@ -72,7 +72,7 @@ export async function fetchVoiceToken(sessionId: string, signal?: AbortSignal): 
   } catch {
     throw new ChatRequestError("Could not reach the support service. Check your connection and try again.", true);
   }
-  if (!response.ok) throw await errorFrom(response);
+  if (!response.ok) throw await errorFrom(response, `Voice couldn't start (error ${response.status}).`);
   const body = (await response.json()) as { token?: unknown; model?: unknown; expires_at?: unknown };
   if (typeof body.token !== "string" || typeof body.model !== "string") {
     throw new ChatRequestError("Voice couldn't start. Please try again.", true);

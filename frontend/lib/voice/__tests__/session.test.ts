@@ -1,9 +1,23 @@
 // Start/stop ordering only. Audio and WebSocket paths are verified in the browser (log D28).
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VoiceSession } from "../session";
 import type { VoiceAction } from "../voiceState";
 
 afterEach(() => vi.unstubAllGlobals());
+
+class FakeAudioContext {
+  static created: FakeAudioContext[] = [];
+  resume = vi.fn(() => Promise.resolve());
+  close = vi.fn(() => Promise.resolve());
+  constructor() {
+    FakeAudioContext.created.push(this);
+  }
+}
+
+beforeEach(() => {
+  FakeAudioContext.created = [];
+  vi.stubGlobal("AudioContext", FakeAudioContext);
+});
 
 function deferredMic() {
   const track = { stop: vi.fn() };
@@ -67,5 +81,26 @@ describe("VoiceSession start and stop", () => {
 
     expect(actions.at(-1)).toMatchObject({ type: "failed", retryable: true });
     expect(JSON.stringify(actions.at(-1))).toContain("Microphone access is blocked");
+  });
+
+  it("creates and resumes audio inside the click, before any await, so iOS Safari allows it (P12)", () => {
+    deferredMic();
+    const { session } = recorder();
+
+    void session.start("s-12345678"); // no await: this is what runs synchronously in the click handler
+
+    expect(FakeAudioContext.created).toHaveLength(1);
+    expect(FakeAudioContext.created[0].resume).toHaveBeenCalled();
+    session.stop();
+    expect(FakeAudioContext.created[0].close).toHaveBeenCalled();
+  });
+
+  it("closes the audio context when the microphone is blocked", async () => {
+    vi.stubGlobal("navigator", {
+      mediaDevices: { getUserMedia: () => Promise.reject(new DOMException("denied", "NotAllowedError")) },
+    });
+    const { session } = recorder();
+    await session.start("s-12345678");
+    expect(FakeAudioContext.created[0].close).toHaveBeenCalled();
   });
 });

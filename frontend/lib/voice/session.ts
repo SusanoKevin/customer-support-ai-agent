@@ -40,6 +40,10 @@ export class VoiceSession {
   /** Each await below can outlast an End call, so every step re-checks `isStopping` (log B3). */
   async start(sessionId: string): Promise<void> {
     this.dispatch({ type: "connecting" });
+    // Before the first await, so it is still inside the click: iOS Safari only starts audio from a user gesture (log P12).
+    const ctx = new AudioContext();
+    this.ctx = ctx;
+    void ctx.resume();
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
@@ -77,8 +81,7 @@ export class VoiceSession {
   }
 
   private async buildAudioGraph(): Promise<void> {
-    const ctx = new AudioContext();
-    this.ctx = ctx;
+    const ctx = this.ctx!;
     await ctx.resume();
     await ctx.audioWorklet.addModule(WORKLET_URL);
     const mic = ctx.createMediaStreamSource(this.stream!);

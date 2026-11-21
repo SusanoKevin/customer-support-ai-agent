@@ -51,6 +51,15 @@ describe("streamChat", () => {
       expect((error as ChatRequestError).retryable).toBe(retryable);
     }
   });
+
+  it("shows the server's wait message when chat is rate limited", async () => {
+    const body = { detail: { message: "Too many messages. Please wait 12 seconds and try again.", retryable: true } };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(body, { status: 429 })));
+    await expect(collect(streamChat("s-12345678", "hi"))).rejects.toMatchObject({
+      message: "Too many messages. Please wait 12 seconds and try again.",
+      retryable: true,
+    });
+  });
 });
 
 describe("failTurn", () => {

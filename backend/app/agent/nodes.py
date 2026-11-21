@@ -119,11 +119,16 @@ async def verify_account_node(state: AgentState, deps: Deps) -> Step:
     if not (email and c.last4 and "@" in email):
         return Step(_reply(state, templates.ASK_IDENTITY, pending=request))
 
+    email_key = email.strip().lower()
+    if deps.email_failures.check(email_key) is not None:  # log P16: checked before the tool, so no guess is tested
+        return Step(_reply(state, templates.EMAIL_LOCKED, pending=None))
+
     call = await _tool(deps, "verify_account", verify_account, {"email": email, "last4": c.last4})
     state = replace(state.logged(call.log_entry), last_email=email)
     if call.error is not None:
         return Step(_escalate(state, "tool_failure"), call.events)
     if not call.result.ok:
+        deps.email_failures.add(email_key)
         failures = state.identity_failures + 1
         if failures >= MAX_IDENTITY_ATTEMPTS:
             return Step(_escalate(state, "identity_not_verified", identity_failures=failures, pending=None), call.events)

@@ -1,0 +1,24 @@
+# Render Blueprint for the FastAPI backend. The frontend deploys separately on Vercel (see README).
+services:
+  - type: web
+    name: support-agent-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.15.2
+      # Secrets: entered in the Render dashboard on first deploy, never committed.
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      # The Vercel production URL, exact, no trailing slash.
+      - key: FRONTEND_ORIGIN
+        sync: false
+      # Render sits behind Cloudflare, which sets this header to the real client IP.
+      - key: CLIENT_IP_HEADER
+        value: true-client-ip

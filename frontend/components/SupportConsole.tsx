@@ -55,7 +55,7 @@ export function SupportConsole() {
       const retryable = error instanceof ChatRequestError ? error.retryable : true;
       const message = error instanceof Error ? error.message : "Something went wrong. Please try again.";
       setConversation((c) => failTurn(c, { code: "network", message, retryable }));
-      return AGENT_FAILED;
+      return error instanceof ChatRequestError ? message : AGENT_FAILED;
     } finally {
       busyRef.current = false;
     }

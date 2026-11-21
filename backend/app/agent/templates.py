@@ -18,6 +18,11 @@ IDENTITY_NOT_VERIFIED = (
     "and try again."
 )
 ALREADY_VERIFIED = "You're already verified. What can I help you with?"
+# Same wording whether or not the email has an account, so the lock does not reveal which emails exist.
+EMAIL_LOCKED = (
+    "For your security I can't check that account right now, because of too many failed attempts. "
+    "Please try again later, or ask for a person and we'll follow up by email."
+)
 IDENTITY_LOCKED = (
     "For your security I can't check any more account details in this conversation. "
     "Our team has your request and will follow up by email."

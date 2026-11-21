@@ -7,8 +7,10 @@ from datetime import date
 
 from app.agent.llm import LLM
 from app.agent.sessions import SessionStore
+from app.agent.state import EMAIL_FAILURE_LIMIT, EMAIL_FAILURE_WINDOW_S
 from app.config import Settings
 from app.rag.retriever import Retriever
+from app.ratelimit import SlidingWindowLimiter
 from app.tools.billing import BillingRecords
 from app.tools.stores import RefundLedger, TicketStore
 from app.voice import VoiceTokenIssuer
@@ -27,3 +29,6 @@ class Deps:
     rng: random.Random = field(default_factory=random.Random)
     retry_delay_s: float = 0.3
     voice: VoiceTokenIssuer | None = None  # None = voice disabled (no key or no Live model)
+    # Failed identity checks per email, shared by every session, so "New session" does not reset guessing.
+    email_failures: SlidingWindowLimiter = field(
+        default_factory=lambda: SlidingWindowLimiter(EMAIL_FAILURE_LIMIT, EMAIL_FAILURE_WINDOW_S))

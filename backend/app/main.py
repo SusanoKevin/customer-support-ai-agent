@@ -1,6 +1,7 @@
 """FastAPI entrypoint. `/api/chat` streams agent turns (chat and voice both use it, log D29); `/api/voice/token` mints Live tokens."""
 
 import logging
+import math
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -19,6 +20,7 @@ from app.db import apply_schema, make_pool
 from app.events import DoneEvent, ErrorEvent
 from app.rag.embeddings import GeminiEmbedder
 from app.rag.retriever import PgVectorRetriever
+from app.ratelimit import SlidingWindowLimiter
 from app.tools.billing import load_billing
 from app.tools.stores import InMemoryRefundLedger, InMemoryTicketStore
 from app.voice import GeminiVoiceTokenIssuer, VoiceTokenError, VoiceTokenIssuer
@@ -44,6 +46,25 @@ class VoiceTokenResponse(BaseModel):
     model: str
     expires_at: str
     new_session_expires_at: str
+
+
+MINUTE_S = 60
+HOUR_S = 60 * 60
+
+
+def client_ip(request: Request, trusted_header: str) -> str:
+    """The socket address, unless a proxy that overwrites `trusted_header` is in front (see config)."""
+    if trusted_header:
+        forwarded = request.headers.get(trusted_header, "").strip()
+        if forwarded:
+            return forwarded
+    return request.client.host if request.client else "unknown"
+
+
+def _too_many(wait_s: float, what: str) -> HTTPException:
+    seconds = max(1, math.ceil(wait_s))
+    return HTTPException(429, {"message": f"Too many {what}. Please wait {seconds} seconds and try again.",
+                               "retryable": True}, headers={"Retry-After": str(seconds)})
 
 
 def _voice_issuer(settings: Settings) -> VoiceTokenIssuer | None:
@@ -110,21 +131,36 @@ def create_app(deps: Deps | None = None, settings: Settings | None = None) -> Fa
         allow_headers=["*"],
     )
 
+    chat_per_session = SlidingWindowLimiter(settings.rate_limit_per_minute, MINUTE_S)
+    chat_per_ip = SlidingWindowLimiter(settings.rate_limit_ip_per_minute, MINUTE_S)
+    voice_per_ip = SlidingWindowLimiter(settings.voice_tokens_per_hour, HOUR_S)
+
     @app.get("/health")
     async def health() -> dict[str, str]:
         """Also used to warm the free Render instance before the demo."""
         return {"status": "ok"}
 
     @app.post("/api/chat")
-    async def chat(req: ChatRequest, deps: Deps = Depends(get_deps)) -> EventSourceResponse:
-        """Rate limiting is added on Day 6 (log P1)."""
+    async def chat(req: ChatRequest, request: Request, deps: Deps = Depends(get_deps)) -> EventSourceResponse:
+        """Capped per session and per IP (log P1). Voice turns come through here too (D29)."""
+        ip = client_ip(request, settings.client_ip_header)
+        wait = chat_per_ip.check(ip) or chat_per_session.check(req.session_id)
+        if wait is not None:
+            logger.warning("Chat rate limit hit for session %s", req.session_id)
+            raise _too_many(wait, "messages")
+        chat_per_ip.add(ip)
+        chat_per_session.add(req.session_id)
         return EventSourceResponse(_sse(req, deps))
 
     @app.post("/api/voice/token", response_model=VoiceTokenResponse)
-    async def voice_token(req: VoiceTokenRequest, response: Response, deps: Deps = Depends(get_deps)) -> VoiceTokenResponse:
+    async def voice_token(req: VoiceTokenRequest, request: Request, response: Response,
+                          deps: Deps = Depends(get_deps)) -> VoiceTokenResponse:
         """Single-use, short-lived token with the model and prompt locked (app/voice.py). Never the real key."""
         if deps.voice is None:
             raise HTTPException(503, {"message": "Voice isn't available on this server.", "retryable": False})
+        wait = voice_per_ip.hit(client_ip(request, settings.client_ip_header))
+        if wait is not None:
+            raise _too_many(wait, "voice sessions")
         try:
             minted = await deps.voice.mint(req.session_id)
         except VoiceTokenError:

@@ -23,19 +23,21 @@ class Settings(BaseSettings):
     voice_new_session_window_s: int = Field(default=60, ge=10, le=600)  # the browser must connect within this
     gemini_embed_model: str = "gemini-embedding-001"
     embed_dim: int = Field(default=768, ge=64, le=3072)  # must match vector(768) in db/schema.sql
-    groq_api_key: str = ""
-    groq_chat_model: str = ""
 
     database_url: str = ""
-    upstash_redis_rest_url: str = ""
-    upstash_redis_rest_token: str = ""
 
     # Calibrated 2026-11-18 on gemini-embedding-001 @768: in-scope 0.66-0.77, out-of-scope 0.51-0.59.
     rag_min_similarity: float = Field(default=0.62, ge=0.0, le=1.0)
     rag_min_chunks: int = Field(default=1, ge=1)
     agent_max_steps: int = Field(default=6, ge=1, le=20)
     simulate_tool_failure_rate: float = Field(default=0.0, ge=0.0, le=1.0)
-    rate_limit_per_minute: int = Field(default=20, ge=1)
+    # Log P1 and P16. In memory, one backend instance (app/ratelimit.py).
+    rate_limit_per_minute: int = Field(default=20, ge=1)      # chat turns per session
+    rate_limit_ip_per_minute: int = Field(default=60, ge=1)   # chat turns per client IP, any session
+    voice_tokens_per_hour: int = Field(default=10, ge=1)      # Live sessions per client IP
+    # Header that carries the real client IP. Empty = the socket address. Only set it behind a proxy
+    # that overwrites the header (Render: "true-client-ip", set by Cloudflare); clients can forge it otherwise.
+    client_ip_header: str = ""
     frontend_origin: str = "http://localhost:3000"
 
 

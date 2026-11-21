@@ -20,6 +20,8 @@ ACTION_INTENTS: frozenset[Intent] = frozenset({"refund_request", "billing_disput
 
 MAX_DISPUTES = 2           # customer pushes back this many times after a refusal -> human
 MAX_IDENTITY_ATTEMPTS = 3  # failed verifications before escalating
+EMAIL_FAILURE_LIMIT = 5    # failed verifications per email, across sessions (log P16)
+EMAIL_FAILURE_WINDOW_S = 15 * 60
 HISTORY_TURNS = 6          # turns kept for prompts
 
 
