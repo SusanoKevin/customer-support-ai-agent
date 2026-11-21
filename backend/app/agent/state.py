@@ -58,11 +58,13 @@ class AgentState:
     # Carried across turns
     account: Account | None = None
     identity_failures: int = 0
+    last_email: str | None = None           # reused when a retry gives only new digits
     pending: Classification | None = None      # request waiting for identity
     dispute_count: int = 0
     last_was_refusal: bool = False
     mode: Mode = "bot"
     open_ticket_id: str | None = None
+    focus_charge_id: str | None = None      # charge under discussion, kept when a follow-up names none
 
     # Reset every turn
     user_message: str = ""

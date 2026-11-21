@@ -102,3 +102,29 @@ async def test_timeout_does_not_fall_back_so_waits_do_not_stack():
 def test_network_failure_becomes_retryable_error():
     err = network_error(httpx.ConnectError("refused"))
     assert err.retryable and err.code == "model_unreachable"
+
+
+class _RecordingGemini(_ScriptedGemini):
+    def __init__(self, outcomes: dict[str, list], thinking: str | None) -> None:
+        GeminiLLM.__init__(self, "test-key", "lite", "flash", timeout_s=1.0, answer_thinking_level=thinking)
+        self.outcomes = outcomes
+        self.calls: list[str] = []
+        self.configs: list = []
+
+    async def _call(self, model, contents, config):
+        self.configs.append(config)
+        return await super()._call(model, contents, config)
+
+
+async def test_thinking_level_applies_to_the_answer_model_only():
+    llm = _RecordingGemini({"flash": [BUSY], "lite": ["Answer [refunds:1:0]"]}, thinking="low")
+    await llm.generate("system", "prompt")
+    flash_config, lite_config = llm.configs
+    assert flash_config.thinking_config.thinking_level.lower() == "low"
+    assert lite_config.thinking_config is None
+
+
+async def test_no_thinking_level_leaves_the_model_default():
+    llm = _RecordingGemini({"flash": ["Answer [refunds:1:0]"]}, thinking=None)
+    await llm.generate("system", "prompt")
+    assert llm.configs[0].thinking_config is None

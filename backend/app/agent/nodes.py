@@ -109,11 +109,13 @@ def _route(state: AgentState, deps: Deps) -> AgentState:
 async def verify_account_node(state: AgentState, deps: Deps) -> Step:
     c = state.classification
     request = state.pending if c.intent == "provide_identity" else c
-    if not (c.email and c.last4 and "@" in c.email):
+    # "Try 2222" on a retry: the classifier only reads the latest message, so reuse the email already given.
+    email = c.email or (state.last_email if c.last4 else None)
+    if not (email and c.last4 and "@" in email):
         return Step(_reply(state, templates.ASK_IDENTITY, pending=request))
 
-    call = await _tool(deps, "verify_account", verify_account, {"email": c.email, "last4": c.last4})
-    state = state.logged(call.log_entry)
+    call = await _tool(deps, "verify_account", verify_account, {"email": email, "last4": c.last4})
+    state = replace(state.logged(call.log_entry), last_email=email)
     if call.error is not None:
         return Step(_escalate(state, "tool_failure"), call.events)
     if not call.result.ok:
@@ -204,14 +206,19 @@ def _billing_dispute(state: AgentState, charges: list[dict[str, Any]]) -> AgentS
 
 def _refund_request(state: AgentState, charges: list[dict[str, Any]]) -> AgentState:
     c = state.classification
-    target = match_charge(c.charge_ref, charges)
+    focused = next((ch for ch in charges if ch["charge_id"] == state.focus_charge_id), None)
+    target = focused if not c.charge_ref and focused is not None else match_charge(c.charge_ref, charges)
     if target is None:
         if state.dispute_count >= MAX_DISPUTES:
             return _escalate(state, "charge_dispute_unresolved")
         return _reply(state, templates.charge_not_found(charges), last_was_refusal=True)
+    state = replace(state, focus_charge_id=target["charge_id"], target_charge_id=target["charge_id"])
     if not c.amount_usd:
-        return _reply(state, templates.ask_amount(target), target_charge_id=target["charge_id"])
-    return _to(state, Node.ISSUE_REFUND, target_charge_id=target["charge_id"])
+        # Asking for an amount the window guard would refuse anyway only stalls the customer (live sweep, S4.3).
+        if not target["in_refund_window"]:
+            return _escalate(state, "outside_refund_window")
+        return _reply(state, templates.ask_amount(target))
+    return _to(state, Node.ISSUE_REFUND)
 
 
 def business_days_between(start: date, end: date) -> int:

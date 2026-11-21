@@ -1,6 +1,7 @@
 """Typed settings loaded from environment. Fails fast on invalid values."""
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -14,6 +15,8 @@ class Settings(BaseSettings):
     gemini_classify_model: str = "gemini-3.5-flash-lite"
     gemini_answer_model: str = "gemini-3.8-flash"
     llm_timeout_s: float = Field(default=20.0, gt=0, le=120)
+    # Empty = the model's default. "low" trades reasoning depth for speed (log P10); "minimal" 400s on 3.8 Flash.
+    gemini_answer_thinking_level: Literal["", "low", "medium", "high"] = ""
     gemini_live_model: str = ""
     gemini_embed_model: str = "gemini-embedding-001"
     embed_dim: int = Field(default=768, ge=64, le=3072)  # must match vector(768) in db/schema.sql

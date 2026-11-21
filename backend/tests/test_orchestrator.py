@@ -341,3 +341,31 @@ def test_refund_reason_masks_email_and_card_digits():
 
 def test_refund_reason_falls_back_when_the_message_says_nothing():
     assert refund_reason("yes") == "Customer confirmed the refund request"
+
+
+# --- found in the live sweep (scripts/live_eval.py, 2026-11-20) -------------
+
+async def test_digit_only_retries_reuse_the_email_and_count_toward_the_limit():  # S7.1 live
+    deps = make_deps(C("refund_request", email="maya@example.com", last4="1111"),
+                     C("provide_identity", last4="2222"), C("provide_identity", last4="3333"))
+    await turn(deps)
+    second = await turn(deps)
+    assert tools(second) == ["verify_account"]
+    third = await turn(deps)
+    assert escalation(third).reason == "identity_not_verified"
+
+
+async def test_request_without_amount_on_an_old_charge_goes_to_review():  # S4.3 live
+    deps = make_deps(C("refund_request", charge_ref="October", **MAYA))
+    events = await turn(deps)
+    assert escalation(events).reason == "outside_refund_window"
+    assert "issue_refund" not in tools(events)
+
+
+async def test_follow_up_amount_applies_to_the_charge_under_discussion():  # S4.3 live, charge drift
+    deps = make_deps(C("refund_request", charge_ref="in_d1", **DEV), C("refund_request", amount_usd=100))
+    first = await turn(deps)
+    assert "How much" in text(first)
+    second = await turn(deps)
+    assert tool(second, "issue_refund").input["charge_id"] == "ch_d1"
+

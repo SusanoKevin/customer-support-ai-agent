@@ -112,7 +112,8 @@ class GeminiLLM:
     Each model is the other's fallback when it is busy, so one overloaded model does not end the turn.
     """
 
-    def __init__(self, api_key: str, classify_model: str, answer_model: str, timeout_s: float) -> None:
+    def __init__(self, api_key: str, classify_model: str, answer_model: str, timeout_s: float,
+                 answer_thinking_level: str | None = None) -> None:
         if not api_key:
             raise ValueError("GEMINI_API_KEY is not set in backend/.env")
         http_options = types.HttpOptions(
@@ -122,6 +123,7 @@ class GeminiLLM:
         self._classify_model = classify_model
         self._answer_model = answer_model
         self._timeout_s = timeout_s
+        self._answer_thinking_level = answer_thinking_level or None
 
     async def _call(self, model: str, contents: str, config: types.GenerateContentConfig) -> Any:
         try:
@@ -137,6 +139,7 @@ class GeminiLLM:
 
     async def _call_with_fallback(
         self, primary: str, fallback: str, contents: str, config: types.GenerateContentConfig,
+        fallback_config: types.GenerateContentConfig | None = None,
     ) -> tuple[Any, str]:
         """Try `primary`; if it fails fast and retryably (429, 5xx, network), try `fallback` once.
 
@@ -150,7 +153,7 @@ class GeminiLLM:
         except LLMError as exc:
             if not exc.retryable or exc.code == "model_timeout" or primary == fallback:
                 raise
-            return await self._call(fallback, contents, config), fallback
+            return await self._call(fallback, contents, fallback_config or config), fallback
 
     async def classify(self, message: str, recent_turns: str) -> LLMReply[Classification]:
         prompt = f"Recent turns:\n{recent_turns or '(none)'}\n\nLatest customer message:\n{message}"
@@ -167,5 +170,12 @@ class GeminiLLM:
 
     async def generate(self, system: str, prompt: str) -> LLMReply[str]:
         config = types.GenerateContentConfig(system_instruction=system, temperature=0.2)
-        response, model = await self._call_with_fallback(self._answer_model, self._classify_model, prompt, config)
+        answer_config = config
+        if self._answer_thinking_level:
+            # Only the answer model gets the level; the fallback model may not accept the same values (log P10).
+            thinking = types.ThinkingConfig(thinking_level=self._answer_thinking_level)
+            answer_config = config.model_copy(update={"thinking_config": thinking})
+        response, model = await self._call_with_fallback(
+            self._answer_model, self._classify_model, prompt, answer_config, fallback_config=config,
+        )
         return LLMReply((response.text or "").strip(), usage_from_response(response, model))
