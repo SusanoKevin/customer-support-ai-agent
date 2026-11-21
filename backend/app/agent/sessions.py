@@ -1,4 +1,4 @@
-"""Session storage for `AgentState` between turns. In-memory for Day 2; Postgres later (L8)."""
+"""Session storage for `AgentState` between turns. In memory for now; Postgres behind the same protocol later (L12)."""
 
 from typing import Protocol
 

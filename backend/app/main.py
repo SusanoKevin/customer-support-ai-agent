@@ -3,6 +3,7 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,13 +26,17 @@ from app.voice import GeminiVoiceTokenIssuer, VoiceTokenError, VoiceTokenIssuer
 logger = logging.getLogger("support_agent")
 
 
+# Matches ID_PATTERN in frontend/lib/session.ts.
+SessionId = Annotated[str, Field(min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")]
+
+
 class ChatRequest(BaseModel):
-    session_id: str = Field(min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    session_id: SessionId
     message: str = Field(min_length=1, max_length=2000)
 
 
 class VoiceTokenRequest(BaseModel):
-    session_id: str = Field(min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    session_id: SessionId
 
 
 class VoiceTokenResponse(BaseModel):
@@ -136,7 +141,7 @@ def create_app(deps: Deps | None = None, settings: Settings | None = None) -> Fa
 
     @app.get("/api/sessions/{session_id}/trace")
     async def session_trace(session_id: str):
-        """TODO Day 3: trace rows for the observability drawer."""
+        """TODO Day 5: trace rows for the observability drawer, so a reload can restore them (L17)."""
         raise NotImplementedError
 
     return app

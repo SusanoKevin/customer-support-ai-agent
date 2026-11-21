@@ -74,7 +74,9 @@ async def run_turn(session_id: str, message: str, deps: Deps) -> AsyncIterator[E
             continue
         for event in step.events:
             yield event
-        yield StatusEvent(step=node, state="completed", label=label)
+        # A tool that failed for good fails its step, even though the node handled it (log B4).
+        tool_failed = any(isinstance(e, ErrorEvent) and e.code == "tool_failed" for e in step.events)
+        yield StatusEvent(step=node, state="failed" if tool_failed else "completed", label=label)
         yield _trace(node, started, step.usage)
         state = replace(step.state, steps_taken=step.state.steps_taken + 1)
 

@@ -63,7 +63,8 @@ async def run_tool(name: str, fn: Callable[..., Any], kwargs: dict[str, Any], *,
             error = exc
             if not exc.retryable or attempt == 2:
                 break
-            events.append(StatusEvent(step=name, state="failed", label="Temporary problem, retrying..."))
+            # Own step id: several tools share their node's name, and the UI keys rows by step (log B4).
+            events.append(StatusEvent(step=f"{name}_retry", state="failed", label="Temporary problem, retrying..."))
             await asyncio.sleep(retry_delay_s)
 
     events.append(ToolEvent(name=name, input=shown, output={"error": str(error)}, ok=False))

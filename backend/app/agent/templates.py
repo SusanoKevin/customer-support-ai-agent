@@ -18,6 +18,10 @@ IDENTITY_NOT_VERIFIED = (
     "and try again."
 )
 ALREADY_VERIFIED = "You're already verified. What can I help you with?"
+IDENTITY_LOCKED = (
+    "For your security I can't check any more account details in this conversation. "
+    "Our team has your request and will follow up by email."
+)
 GREETING = "Hi, I'm the support assistant (an AI). I can help with billing, refunds, your plan, and technical issues."
 OUT_OF_SCOPE = (
     "That's outside what I can help with. I can answer questions about billing, refunds, your plan, and "
@@ -32,6 +36,15 @@ TICKET_FAILED = (
 
 def verified(name: str) -> str:
     return f"Thanks, {name.split()[0]}, you're verified. What can I help you with?"
+
+
+def refund_issued(amount_usd: float, invoice_id: str, refund_id: str, replayed: bool) -> str:
+    """Fixed confirmation, so a busy answer model can never hide a refund that went through (log B1).
+    Timing wording follows the "Refund method and timing" policy section."""
+    lead = "That refund was already issued:" if replayed else "Done. I've issued a refund of"
+    return (f"{lead} ${amount_usd:.2f} on invoice {invoice_id}, back to your original card. "
+            f"Your refund reference is {refund_id}. Card refunds typically appear within 5 to 10 business days, "
+            "depending on your bank.")
 
 
 def ask_amount(charge: dict[str, Any]) -> str:

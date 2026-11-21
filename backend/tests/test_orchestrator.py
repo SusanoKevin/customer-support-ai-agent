@@ -4,12 +4,13 @@ Scenario ids refer to docs/test_scenarios.md. No test calls Gemini or the databa
 """
 
 import random
+from dataclasses import replace
 from datetime import date
 
 from app.agent import templates
 from app.agent.deps import Deps
 from app.agent.llm import Classification, LLMError, LLMReply, Usage
-from app.agent.nodes import refund_reason
+from app.agent.nodes import match_charge, refund_reason
 from app.agent.orchestrator import run_turn
 from app.agent.pricing import cost_usd
 from app.agent.sessions import InMemorySessionStore
@@ -107,8 +108,9 @@ async def test_pro_refund_within_limit_runs_the_full_tool_chain():  # S1.1
     deps = make_deps(C("refund_request", amount_usd=30, **MAYA))
     events = await turn(deps)
     assert tools(events) == ["verify_account", "retrieve_policy", "lookup_charges", "issue_refund"]
-    assert tool(events, "issue_refund").ok
-    assert text(events) == ANSWER
+    refund = tool(events, "issue_refund")
+    assert refund.ok
+    assert text(events) == templates.refund_issued(30.0, "in_m1", refund.output["refund_id"], replayed=False)
     assert [r.amount_usd for r in agent_refunds(deps)] == [30.0]
     assert escalation(events) is None
 
@@ -369,3 +371,91 @@ async def test_follow_up_amount_applies_to_the_charge_under_discussion():  # S4.
     second = await turn(deps)
     assert tool(second, "issue_refund").input["charge_id"] == "ch_d1"
 
+
+# --- review findings (log B1 to B6) ----------------------------------------
+
+class AnswerModelDownOnce(FakeLLM):
+    """First answer call fails as if 3.8 Flash were busy and Lite rate limited (D27)."""
+
+    def __init__(self, script: list[Classification]) -> None:
+        super().__init__(script)
+        self.has_failed = False
+
+    async def generate(self, system: str, prompt: str) -> LLMReply[str]:
+        if not self.has_failed:
+            self.has_failed = True
+            raise LLMError("busy", retryable=True, code="rate_limited")
+        return await super().generate(system, prompt)
+
+
+def with_llm(deps: Deps, llm) -> Deps:
+    return replace(deps, llm=llm)
+
+
+async def test_refund_is_confirmed_with_fixed_text_even_when_the_answer_model_is_down():  # B1
+    deps = make_deps(C("refund_request", amount_usd=30, **MAYA))
+    deps = with_llm(deps, AnswerModelDownOnce(deps.llm.script))
+    events = await turn(deps)
+    refund = tool(events, "issue_refund")
+    assert refund.ok
+    reply = text(events)
+    assert reply != templates.MODEL_UNAVAILABLE
+    assert "$30.00" in reply and refund.output["refund_id"] in reply and "in_m1" in reply
+    assert "5 to 10 business days" in reply
+    assert not any(isinstance(e, ErrorEvent) for e in events)
+
+
+async def test_no_verification_after_the_lockout():  # B5
+    wrong = [C("provide_identity", email="maya@example.com", last4=d) for d in ("1111", "2222", "3333")]
+    deps = make_deps(*wrong, C("provide_identity", **MAYA))
+    for _ in range(3):
+        await turn(deps)
+    locked = await turn(deps)
+    assert tools(locked) == []
+    assert text(locked) == templates.IDENTITY_LOCKED
+    assert deps.sessions.get("session-0001").account is None
+
+
+class BrokenRetriever(FakeRetriever):
+    async def search(self, query: str, tier: str | None, top_k: int) -> list[Chunk]:
+        raise RuntimeError("embed_content 429 RESOURCE_EXHAUSTED")
+
+
+async def test_retrieval_outage_retries_then_escalates():  # B2
+    deps = make_deps(C("policy_question"), retriever=BrokenRetriever())
+    events = await turn(deps)
+    assert escalation(events).reason == "tool_failure"
+    assert "RESOURCE_EXHAUSTED" not in tool(events, "retrieve_policy").output["error"]
+    assert deps.sessions.get("session-0001") is not None  # the turn was saved
+
+
+async def test_tool_outage_marks_the_step_failed_and_keeps_the_retry_separate():  # B4
+    deps = make_deps(C("refund_request", amount_usd=30, **MAYA), failure_rate=1.0)
+    events = await turn(deps)
+    rows = [(e.step, e.state) for e in events if isinstance(e, StatusEvent) and e.step.startswith("verify_account")]
+    assert rows == [("verify_account", "started"), ("verify_account_retry", "failed"), ("verify_account", "failed")]
+
+
+CHARGES = [{"charge_id": "ch_nov", "invoice_id": "in_n", "invoice_period": "2026-11"},
+           {"charge_id": "ch_oct", "invoice_id": "in_o", "invoice_period": "2026-10"},
+           {"charge_id": "ch_may", "invoice_id": "in_y", "invoice_period": "2026-05"}]
+
+
+def test_match_charge_reads_month_names_and_abbreviations():  # B6 keeps these working
+    assert match_charge("October", CHARGES)["charge_id"] == "ch_oct"
+    assert match_charge("oct", CHARGES)["charge_id"] == "ch_oct"
+    assert match_charge("my May invoice", CHARGES)["charge_id"] == "ch_may"
+    assert match_charge("last month", CHARGES)["charge_id"] == "ch_oct"
+    assert match_charge("IN_N", CHARGES)["charge_id"] == "ch_nov"
+    assert match_charge(None, CHARGES)["charge_id"] == "ch_nov"
+
+
+def test_month_words_inside_other_words_do_not_match():  # B6
+    assert match_charge("maybe the big one", CHARGES) is None
+    assert match_charge("decline fee", CHARGES) is None
+    assert match_charge("octopus", CHARGES) is None
+
+
+def test_replayed_refund_is_confirmed_as_already_issued():  # B1, idempotent retry of the same request
+    text_ = templates.refund_issued(30.0, "in_m1", "rf_1", replayed=True)
+    assert text_.startswith("That refund was already issued") and "rf_1" in text_

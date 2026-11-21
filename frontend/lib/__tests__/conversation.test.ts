@@ -25,6 +25,18 @@ describe("conversation reducer", () => {
     expect(after.messages[1].text).toBe("Hello");
   });
 
+  it("keeps a tool retry as its own row and shows the step as failed when the tool gave up", () => {
+    const state = run([
+      { event: "status", data: { step: "verify_account", state: "started", label: "Verifying Account Tier..." } },
+      { event: "status", data: { step: "verify_account_retry", state: "failed", label: "Temporary problem, retrying..." } },
+      { event: "status", data: { step: "verify_account", state: "failed", label: "Verifying Account Tier..." } },
+    ]);
+    expect(state.messages[1].steps.map((s) => [s.label, s.state])).toEqual([
+      ["Verifying Account Tier...", "failed"],
+      ["Temporary problem, retrying...", "failed"],
+    ]);
+  });
+
   it("tracks steps from started to completed or failed", () => {
     const state = run([
       { event: "status", data: { step: "classify_intent", state: "started", label: "Understanding..." } },

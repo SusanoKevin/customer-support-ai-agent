@@ -26,28 +26,38 @@ export class VoiceSession {
   private nextPlayAt = 0;
   private isStreaming = false;
   private isStopping = false;
+  private readonly startAbort = new AbortController();
   micAnalyser: AnalyserNode | null = null;
   outputAnalyser: AnalyserNode | null = null;
 
   constructor(private readonly dispatch: Dispatch) {}
 
+  /** Each await below can outlast an End call, so every step re-checks `isStopping` (log B3). */
   async start(sessionId: string): Promise<void> {
     this.dispatch({ type: "connecting" });
+    let stream: MediaStream;
     try {
-      this.stream = await navigator.mediaDevices.getUserMedia({
+      stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
     } catch (error) {
-      this.fail(micErrorMessage(error), true);
+      if (!this.isStopping) this.fail(micErrorMessage(error), true);
       return;
     }
+    if (this.isStopping) {
+      stream.getTracks().forEach((t) => t.stop()); // granted after End call: release it at once
+      return;
+    }
+    this.stream = stream;
     try {
       // Mic first: the token must be used within its new-session window, and the permission prompt can take a while.
-      const token = await fetchVoiceToken(sessionId);
+      const token = await fetchVoiceToken(sessionId, this.startAbort.signal);
       if (this.isStopping) return;
       await this.buildAudioGraph();
+      if (this.isStopping) return this.cleanup();
       this.openSocket(token.token, token.model);
     } catch (error) {
+      if (this.isStopping) return; // the abort or a closed AudioContext, caused by End call itself
       const retryable = error instanceof ChatRequestError ? error.retryable : true;
       this.fail(error instanceof Error ? error.message : "Voice couldn't start.", retryable);
     }
@@ -55,6 +65,7 @@ export class VoiceSession {
 
   stop(): void {
     this.isStopping = true;
+    this.startAbort.abort();
     this.ws?.close(NORMAL_CLOSE);
     this.cleanup(); // detaches onclose, so "ended" is dispatched here rather than from the socket
     this.dispatch({ type: "ended" });

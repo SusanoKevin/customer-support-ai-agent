@@ -41,6 +41,8 @@ ESCALATE_ON_DECLINE = {
 MONTHS = {m: f"{i:02d}" for i, m in enumerate(
     ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
      "november", "december"], start=1)}
+# A month's full name or abbreviation as a whole word: "October", "oct", "sept". Not "maybe" (log B6).
+MONTH_WORD = re.compile(r"\b(" + "|".join([*MONTHS, *(m[:3] for m in MONTHS), "sept"]) + r")\b")
 
 
 @dataclass(frozen=True)
@@ -107,6 +109,9 @@ def _route(state: AgentState, deps: Deps) -> AgentState:
 # --- verify_account ---------------------------------------------------------
 
 async def verify_account_node(state: AgentState, deps: Deps) -> Step:
+    # The lockout must stop the check itself, or a 4-digit code can be guessed in one session (log B5).
+    if state.identity_failures >= MAX_IDENTITY_ATTEMPTS:
+        return Step(_reply(state, templates.IDENTITY_LOCKED, pending=None))
     c = state.classification
     request = state.pending if c.intent == "provide_identity" else c
     # "Try 2222" on a retry: the classifier only reads the latest message, so reuse the email already given.
@@ -171,8 +176,11 @@ def match_charge(ref: str | None, charges: list[dict[str, Any]]) -> dict[str, An
         return charges[0]
     if any(word in r for word in ("last month", "previous")):
         return charges[1] if len(charges) > 1 else charges[0]
-    month = next((num for name, num in MONTHS.items() if name in r or name[:3] == r[:3]), None)
-    return next((c for c in charges if c["invoice_period"].endswith(f"-{month}")), None) if month else None
+    word = MONTH_WORD.search(r)
+    if word is None:
+        return None
+    month = next(num for name, num in MONTHS.items() if name.startswith(word.group(1)[:3]))
+    return next((c for c in charges if c["invoice_period"].endswith(f"-{month}")), None)
 
 
 async def decide_action(state: AgentState, deps: Deps) -> Step:
@@ -274,9 +282,17 @@ async def issue_refund_node(state: AgentState, deps: Deps) -> Step:
         return Step(_escalate(state.with_fact("refund", "not confirmed"), "tool_failure"), call.events)
     data = call.result.data
     if call.result.ok:
-        return Step(_to(state.with_fact("refund_issued", data), Node.RESPOND, dispute_count=0, last_was_refusal=False),
+        text = templates.refund_issued(data["amount_usd"], _invoice_id(state, data["charge_id"]), data["refund_id"],
+                                       data["replayed"])
+        return Step(_reply(state.with_fact("refund_issued", data), text, dispute_count=0, last_was_refusal=False),
                     call.events)
     return Step(_after_decline(state.with_fact("refund_declined", data), data), call.events)
+
+
+def _invoice_id(state: AgentState, charge_id: str) -> str:
+    """Customers know invoice numbers, not internal charge ids."""
+    charges = state.facts.get("charges", ())
+    return next((c["invoice_id"] for c in charges if c["charge_id"] == charge_id), charge_id)
 
 
 def _after_decline(state: AgentState, data: dict[str, Any]) -> AgentState:

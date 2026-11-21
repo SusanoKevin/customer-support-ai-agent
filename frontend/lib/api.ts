@@ -3,6 +3,11 @@ import { SseParser } from "./sse";
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
+/** Rate limits and server errors are worth retrying; a 4xx validation error is not. */
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
 export class ChatRequestError extends Error {
   constructor(message: string, readonly retryable: boolean) {
     super(message);
@@ -23,8 +28,7 @@ export async function* streamChat(sessionId: string, message: string, signal?: A
     throw new ChatRequestError("Could not reach the support service. Check your connection and try again.", true);
   }
   if (!response.ok || !response.body) {
-    const retryable = response.status === 429 || response.status >= 500;
-    throw new ChatRequestError(`The support service returned ${response.status}.`, retryable);
+    throw new ChatRequestError(`The support service returned ${response.status}.`, isRetryableStatus(response.status));
   }
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
   const parser = new SseParser();
@@ -42,7 +46,7 @@ export interface VoiceToken {
 }
 
 async function errorFrom(response: Response): Promise<ChatRequestError> {
-  const fallbackRetryable = response.status === 429 || response.status >= 500;
+  const fallbackRetryable = isRetryableStatus(response.status);
   try {
     const body = (await response.json()) as { detail?: { message?: unknown; retryable?: unknown } };
     const { message, retryable } = body.detail ?? {};

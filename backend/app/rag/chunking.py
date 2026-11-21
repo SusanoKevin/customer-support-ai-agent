@@ -43,15 +43,10 @@ def chunk_markdown(doc: str, markdown: str) -> list[RawChunk]:
     chunks = []
     for s_idx, section in enumerate(sections):
         heading, _, body = section.partition("\n")
+        tiers = _parse_tiers(body)
         text = TIERS_LINE.sub("", body).strip()
-        for w_idx, window in enumerate(_windows(text.split())):
-            chunks.append(
-                RawChunk(
-                    chunk_id=f"{doc}:{s_idx}:{w_idx}",
-                    doc=doc,
-                    heading=heading.strip(),
-                    text=window,
-                    tiers=_parse_tiers(body),
-                )
-            )
+        chunks.extend(
+            RawChunk(chunk_id=f"{doc}:{s_idx}:{w_idx}", doc=doc, heading=heading.strip(), text=window, tiers=tiers)
+            for w_idx, window in enumerate(_windows(text.split()))
+        )
     return chunks

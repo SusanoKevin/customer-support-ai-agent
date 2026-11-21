@@ -1,7 +1,7 @@
 """Stores for records the agent creates: refunds and support tickets.
 
 Records are frozen; a store only ever adds a record or replaces one with a new version.
-In-memory versions serve Day 2 and the tests. Postgres versions replace them later (L8)
+In-memory versions run the demo and the tests. Postgres versions replace them later (L8, L12)
 behind the same protocols.
 """
 
