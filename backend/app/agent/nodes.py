@@ -4,6 +4,7 @@ The model labels the message (classify_intent) and writes grounded answers (resp
 Every routing and escalation decision below is plain code.
 """
 
+import re
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from typing import Any
@@ -11,6 +12,7 @@ from typing import Any
 from app.agent import templates
 from app.agent.deps import Deps
 from app.agent.guardrails import grounding_gate, retrieval_gate
+from app.agent.llm import Usage
 from app.agent.state import (
     ACCOUNT_INTENTS, ACTION_INTENTS, MAX_DISPUTES, MAX_IDENTITY_ATTEMPTS, AgentState, Node, recent_turns,
 )
@@ -24,6 +26,10 @@ from app.tools.policies import retrieve_policy
 
 SETTLEMENT_BUSINESS_DAYS = 10
 TOKEN_CHUNK_WORDS = 4
+REFUND_REASON_MAX_CHARS = 280
+REFUND_REASON_MIN_CHARS = 12  # shorter messages ("yes", "do it") say nothing a reviewer can use
+EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+DIGIT_RUN = re.compile(r"\b\d{4,}\b")
 # Declines that policy routes to a person rather than explaining and moving on.
 ESCALATE_ON_DECLINE = {
     "over_tier_limit": "over_tier_limit",
@@ -41,6 +47,7 @@ MONTHS = {m: f"{i:02d}" for i, m in enumerate(
 class Step:
     state: AgentState
     events: tuple[Event, ...] = ()
+    usage: tuple[Usage, ...] = ()  # one entry per model call this step made
 
 
 def _to(state: AgentState, node: Node, **changes: Any) -> AgentState:
@@ -63,10 +70,11 @@ async def _tool(deps: Deps, name: str, fn: Any, kwargs: dict[str, Any]) -> ToolC
 # --- classify_intent --------------------------------------------------------
 
 async def classify_intent(state: AgentState, deps: Deps) -> Step:
-    c = await deps.llm.classify(state.user_message, recent_turns(state))
+    reply = await deps.llm.classify(state.user_message, recent_turns(state))
+    c = reply.value
     pushed_back = c.disputes_previous_answer and state.last_was_refusal
     state = replace(state, classification=c, dispute_count=state.dispute_count + int(pushed_back))
-    return Step(_route(_refresh_mode(state, deps), deps))
+    return Step(_route(_refresh_mode(state, deps), deps), usage=(reply.usage,))
 
 
 def _refresh_mode(state: AgentState, deps: Deps) -> AgentState:
@@ -238,11 +246,19 @@ async def _refund_status(state: AgentState, deps: Deps) -> Step:
 
 # --- issue_refund -----------------------------------------------------------
 
+def refund_reason(message: str) -> str:
+    """The customer's own words for the human reviewer, with email and card digits masked (log F6)."""
+    masked = DIGIT_RUN.sub("****", EMAIL.sub("[email]", message)).strip()
+    if len(masked) < REFUND_REASON_MIN_CHARS:
+        return "Customer confirmed the refund request"
+    return masked[:REFUND_REASON_MAX_CHARS]
+
+
 async def issue_refund_node(state: AgentState, deps: Deps) -> Step:
     amount = round(state.classification.amount_usd, 2)
     call = await _tool(deps, "issue_refund", issue_refund, {
         "user_id": state.account.user_id, "charge_id": state.target_charge_id, "amount_usd": amount,
-        "reason": state.classification.search_query or "customer request",
+        "reason": refund_reason(state.user_message),
         "idempotency_key": f"{state.session_id}:{state.turn}:{state.target_charge_id}:{amount}",
         "records": deps.records, "ledger": deps.ledger, "today": deps.today(),
     })
@@ -319,23 +335,27 @@ def token_events(text: str) -> tuple[TokenEvent, ...]:
     return tuple(TokenEvent(text=g + (" " if i < len(groups) - 1 else "")) for i, g in enumerate(groups))
 
 
-async def _grounded_answer(state: AgentState, deps: Deps) -> str | None:
-    """Buffer the whole answer, check citations, regenerate once. Nothing unchecked reaches the customer."""
+async def _grounded_answer(state: AgentState, deps: Deps) -> tuple[str | None, tuple[Usage, ...]]:
+    """Buffer the whole answer, check citations, regenerate once. Nothing unchecked reaches the customer.
+
+    Returns the answer (None if both drafts failed the gate) and the usage of every call made."""
     a = state.account
     account = {"name": a.name, "tier": a.tier, "contract_status": a.contract_status} if a else None
     excerpts = "\n".join(f"[{c.chunk_id}] {c.heading}: {c.text}" for c in state.chunks)
     prompt = templates.answer_prompt(state.user_message, recent_turns(state), account, dict(state.facts), excerpts)
+    usage: tuple[Usage, ...] = ()
     for _ in range(2):
-        text = await deps.llm.generate(templates.RESPOND_SYSTEM, prompt)
-        if grounding_gate(text, list(state.chunks)).passed:
-            return text
-    return None
+        reply = await deps.llm.generate(templates.RESPOND_SYSTEM, prompt)
+        usage = (*usage, reply.usage)
+        if grounding_gate(reply.value, list(state.chunks)).passed:
+            return reply.value, usage
+    return None, usage
 
 
 async def respond(state: AgentState, deps: Deps) -> Step:
     if state.reply is not None:
         return Step(_to(state, Node.END), token_events(state.reply))
-    text = await _grounded_answer(state, deps)
+    text, usage = await _grounded_answer(state, deps)
     if text is None:
-        return Step(_escalate(state, "uncited_answer"))
-    return Step(_to(state, Node.END, reply=text), token_events(text))
+        return Step(_escalate(state, "uncited_answer"), usage=usage)
+    return Step(_to(state, Node.END, reply=text), token_events(text), usage)

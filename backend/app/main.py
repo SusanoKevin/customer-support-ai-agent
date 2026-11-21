@@ -39,7 +39,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     records = load_billing()
     embedder = GeminiEmbedder(settings.gemini_api_key, settings.gemini_embed_model, settings.embed_dim)
     app.state.deps = Deps(
-        llm=GeminiLLM(settings.gemini_api_key, settings.gemini_chat_model),
+        llm=GeminiLLM(settings.gemini_api_key, settings.gemini_classify_model,
+                      settings.gemini_answer_model, settings.llm_timeout_s),
         retriever=PgVectorRetriever(pool, embedder),
         records=records,
         ledger=InMemoryRefundLedger(records.refunds),

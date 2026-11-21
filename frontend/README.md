@@ -1,12 +1,16 @@
-# Frontend (Day 3)
+# Frontend
 
-Generate the app here, then keep `lib/events.ts`:
+Next.js chat client for the support agent. Run the backend on port 8000 first.
 
 ```bash
-npx create-next-app@latest . --ts --app --eslint --tailwind --no-src-dir
+npm install
+npm run dev     # http://localhost:3000
+npm test        # unit tests for the SSE parser, conversation reducer and citations
 ```
 
-Planned components:
+Set `NEXT_PUBLIC_API_BASE` to point at a deployed backend (default `http://localhost:8000`).
+
+Components (voice ones arrive with the voice work):
 
 ```
 app/page.tsx                       two-pane layout: conversation + observability drawer

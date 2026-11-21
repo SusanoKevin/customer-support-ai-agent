@@ -8,11 +8,15 @@ from datetime import date
 
 from app.agent import templates
 from app.agent.deps import Deps
-from app.agent.llm import Classification, LLMError
+from app.agent.llm import Classification, LLMError, LLMReply, Usage
+from app.agent.nodes import refund_reason
 from app.agent.orchestrator import run_turn
+from app.agent.pricing import cost_usd
 from app.agent.sessions import InMemorySessionStore
 from app.config import Settings
-from app.events import DoneEvent, ErrorEvent, EscalationEvent, Event, StatusEvent, TokenEvent, ToolEvent
+from app.events import (
+    DoneEvent, ErrorEvent, EscalationEvent, Event, StatusEvent, TokenEvent, ToolEvent, TraceEvent,
+)
 from app.rag.retriever import Chunk
 from app.tools.billing import load_billing
 from app.tools.stores import InMemoryRefundLedger, InMemoryTicketStore
@@ -22,6 +26,8 @@ MAYA = {"email": "maya@example.com", "last4": "4242"}
 DEV = {"email": "dev@example.com", "last4": "1881"}
 LEE = {"email": "lee@example.com", "last4": "5150"}
 ANSWER = "Here is what I found [refunds:1:0]."
+CLASSIFY_USAGE = Usage(model="gemini-3.5-flash-lite", tokens_in=300, tokens_out=40)
+ANSWER_USAGE = Usage(model="gemini-3.8-flash", tokens_in=900, tokens_out=120)
 
 
 def _chunk(chunk_id: str, similarity: float = 0.72) -> Chunk:
@@ -46,13 +52,13 @@ class FakeLLM:
         self.answers = list(answers or [])
         self.classify_error = classify_error
 
-    async def classify(self, message: str, recent_turns: str) -> Classification:
+    async def classify(self, message: str, recent_turns: str) -> LLMReply[Classification]:
         if self.classify_error is not None:
             raise self.classify_error
-        return self.script.pop(0)
+        return LLMReply(self.script.pop(0), CLASSIFY_USAGE)
 
-    async def generate(self, system: str, prompt: str) -> str:
-        return self.answers.pop(0) if self.answers else ANSWER
+    async def generate(self, system: str, prompt: str) -> LLMReply[str]:
+        return LLMReply(self.answers.pop(0) if self.answers else ANSWER, ANSWER_USAGE)
 
 
 def C(intent: str, **fields) -> Classification:
@@ -293,3 +299,45 @@ async def test_every_started_step_completes_or_fails():
     finished = [e.step for e in events if isinstance(e, StatusEvent) and e.state in ("completed", "failed")
                 and e.step in started]
     assert started == finished
+
+
+# --- observability ----------------------------------------------------------
+
+def traces(events: list[Event]) -> dict[str, TraceEvent]:
+    return {e.step: e for e in events if isinstance(e, TraceEvent)}
+
+
+async def test_model_steps_report_model_tokens_and_cost():
+    events = await turn(make_deps(C("policy_question")))
+    rows = traces(events)
+    assert (rows["classify_intent"].model, rows["classify_intent"].tokens_in) == ("gemini-3.5-flash-lite", 300)
+    assert rows["respond"].model == "gemini-3.8-flash"
+    assert rows["respond"].cost_usd == round(cost_usd(ANSWER_USAGE), 6)
+    assert rows["retrieve_policy"].model is None and rows["retrieve_policy"].tokens_in == 0
+
+
+async def test_regenerated_answer_counts_both_model_calls():
+    events = await turn(make_deps(C("policy_question"), answers=["No citation here.", ANSWER]))
+    respond = traces(events)["respond"]
+    assert (respond.tokens_in, respond.tokens_out) == (1800, 240)
+
+
+async def test_failed_model_step_still_reports_latency():
+    deps = make_deps(classify_error=LLMError("503", retryable=True, code="model_unavailable"))
+    assert "classify_intent" in traces(await turn(deps))
+
+
+async def test_refund_reason_is_the_customers_words_not_the_search_query():
+    deps = make_deps(C("refund_request", amount_usd=30, search_query="refund policy invoice", **MAYA))
+    events = await turn(deps)
+    assert tool(events, "issue_refund").input["reason"] == "customer message"
+
+
+def test_refund_reason_masks_email_and_card_digits():
+    reason = refund_reason("Refund $30 please. maya@example.com, last 4 is 4242")
+    assert "maya@example.com" not in reason and "4242" not in reason
+    assert reason.startswith("Refund $30 please.")
+
+
+def test_refund_reason_falls_back_when_the_message_says_nothing():
+    assert refund_reason("yes") == "Customer confirmed the refund request"

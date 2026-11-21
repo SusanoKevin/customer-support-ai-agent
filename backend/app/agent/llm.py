@@ -5,8 +5,11 @@ facts it is given (`generate`). Every decision about refunds, tickets and escala
 made in code from those outputs.
 """
 
-from typing import Literal, Protocol
+import asyncio
+from dataclasses import dataclass
+from typing import Any, Generic, Literal, Protocol, TypeVar
 
+import httpx
 from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -24,6 +27,9 @@ Intent = Literal[
 ]
 
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+# One attempt per call: the SDK's own retries turned a 503 into a 90 second hang (log F5).
+# A failed call surfaces as a retryable `error` event and the customer can resend.
+SDK_ATTEMPTS = 1
 
 CLASSIFY_SYSTEM = """You label customer support messages for a SaaS company. You do not answer them.
 Return JSON matching the schema.
@@ -48,6 +54,24 @@ class Classification(BaseModel):
     search_query: str = ""
 
 
+T = TypeVar("T")
+
+
+@dataclass(frozen=True)
+class Usage:
+    """Tokens one model call used. Output includes thinking tokens, as the provider bills them."""
+
+    model: str
+    tokens_in: int = 0
+    tokens_out: int = 0
+
+
+@dataclass(frozen=True)
+class LLMReply(Generic[T]):
+    value: T
+    usage: Usage
+
+
 class LLMError(Exception):
     def __init__(self, message: str, *, retryable: bool, code: str) -> None:
         super().__init__(message)
@@ -56,9 +80,25 @@ class LLMError(Exception):
 
 
 class LLM(Protocol):
-    async def classify(self, message: str, recent_turns: str) -> Classification: ...
+    async def classify(self, message: str, recent_turns: str) -> LLMReply[Classification]: ...
 
-    async def generate(self, system: str, prompt: str) -> str: ...
+    async def generate(self, system: str, prompt: str) -> LLMReply[str]: ...
+
+
+def usage_from_response(response: Any, model: str) -> Usage:
+    meta = getattr(response, "usage_metadata", None)
+    if meta is None:
+        return Usage(model=model)
+    tokens_out = (meta.candidates_token_count or 0) + (getattr(meta, "thoughts_token_count", None) or 0)
+    return Usage(model=model, tokens_in=meta.prompt_token_count or 0, tokens_out=tokens_out)
+
+
+def timeout_error(timeout_s: float) -> LLMError:
+    return LLMError(f"Model call exceeded {timeout_s:g}s", retryable=True, code="model_timeout")
+
+
+def network_error(exc: httpx.TransportError) -> LLMError:
+    return LLMError(f"Could not reach the model: {type(exc).__name__}", retryable=True, code="model_unreachable")
 
 
 def _llm_error(exc: errors.APIError) -> LLMError:
@@ -67,31 +107,65 @@ def _llm_error(exc: errors.APIError) -> LLMError:
 
 
 class GeminiLLM:
-    def __init__(self, api_key: str, model: str) -> None:
+    """Routes the short labelling call to a small model and the answer to a stronger one (log P3).
+
+    Each model is the other's fallback when it is busy, so one overloaded model does not end the turn.
+    """
+
+    def __init__(self, api_key: str, classify_model: str, answer_model: str, timeout_s: float) -> None:
         if not api_key:
             raise ValueError("GEMINI_API_KEY is not set in backend/.env")
-        self._client = genai.Client(api_key=api_key)
-        self._model = model
+        http_options = types.HttpOptions(
+            timeout=int(timeout_s * 1000), retry_options=types.HttpRetryOptions(attempts=SDK_ATTEMPTS),
+        )
+        self._client = genai.Client(api_key=api_key, http_options=http_options)
+        self._classify_model = classify_model
+        self._answer_model = answer_model
+        self._timeout_s = timeout_s
 
-    async def classify(self, message: str, recent_turns: str) -> Classification:
+    async def _call(self, model: str, contents: str, config: types.GenerateContentConfig) -> Any:
+        try:
+            # The outer bound also covers connection setup, which the HTTP timeout may not.
+            async with asyncio.timeout(self._timeout_s + 1):
+                return await self._client.aio.models.generate_content(model=model, contents=contents, config=config)
+        except errors.APIError as exc:
+            raise _llm_error(exc) from exc
+        except (TimeoutError, httpx.TimeoutException) as exc:  # TimeoutException first: it is a TransportError
+            raise timeout_error(self._timeout_s) from exc
+        except httpx.TransportError as exc:
+            raise network_error(exc) from exc
+
+    async def _call_with_fallback(
+        self, primary: str, fallback: str, contents: str, config: types.GenerateContentConfig,
+    ) -> tuple[Any, str]:
+        """Try `primary`; if it fails fast and retryably (429, 5xx, network), try `fallback` once.
+
+        Free-tier quota is per model, so the other model usually has capacity when one does not.
+        A timeout does not fall back: the customer has already waited the full timeout, and a second
+        slow call would stack the waits (review finding, log D25).
+        Returns the response and the model that produced it, so the trace shows any fallback.
+        """
+        try:
+            return await self._call(primary, contents, config), primary
+        except LLMError as exc:
+            if not exc.retryable or exc.code == "model_timeout" or primary == fallback:
+                raise
+            return await self._call(fallback, contents, config), fallback
+
+    async def classify(self, message: str, recent_turns: str) -> LLMReply[Classification]:
         prompt = f"Recent turns:\n{recent_turns or '(none)'}\n\nLatest customer message:\n{message}"
         config = types.GenerateContentConfig(
             system_instruction=CLASSIFY_SYSTEM, response_mime_type="application/json",
             response_schema=Classification, temperature=0.0,
         )
+        response, model = await self._call_with_fallback(self._classify_model, self._answer_model, prompt, config)
         try:
-            response = await self._client.aio.models.generate_content(model=self._model, contents=prompt, config=config)
-        except errors.APIError as exc:
-            raise _llm_error(exc) from exc
-        try:
-            return Classification.model_validate_json(response.text or "{}")
+            label = Classification.model_validate_json(response.text or "{}")
         except ValidationError as exc:
             raise LLMError("Classifier returned invalid JSON", retryable=True, code="model_bad_output") from exc
+        return LLMReply(label, usage_from_response(response, model))
 
-    async def generate(self, system: str, prompt: str) -> str:
+    async def generate(self, system: str, prompt: str) -> LLMReply[str]:
         config = types.GenerateContentConfig(system_instruction=system, temperature=0.2)
-        try:
-            response = await self._client.aio.models.generate_content(model=self._model, contents=prompt, config=config)
-        except errors.APIError as exc:
-            raise _llm_error(exc) from exc
-        return (response.text or "").strip()
+        response, model = await self._call_with_fallback(self._answer_model, self._classify_model, prompt, config)
+        return LLMReply((response.text or "").strip(), usage_from_response(response, model))

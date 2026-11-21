@@ -10,7 +10,8 @@ from dataclasses import replace
 
 from app.agent import nodes, templates
 from app.agent.deps import Deps
-from app.agent.llm import LLMError
+from app.agent.llm import LLMError, Usage
+from app.agent.pricing import cost_usd
 from app.agent.state import STATUS_LABELS, AgentState, Node, finish_turn, start_turn
 from app.events import DoneEvent, ErrorEvent, Event, StatusEvent, TraceEvent
 
@@ -28,6 +29,18 @@ NODES: dict[Node, NodeFn] = {
 # Escalating and responding always get to run, so a long turn still ends with a handoff.
 ALWAYS_RUN = frozenset({Node.ESCALATE, Node.RESPOND})
 HARD_STOP_EXTRA_STEPS = 3
+COST_DECIMALS = 6
+
+
+def _trace(node: Node, started: float, usage: tuple[Usage, ...] = ()) -> TraceEvent:
+    """One drawer row per step. A step that retried a model call sums both calls."""
+    models = sorted({u.model for u in usage})
+    return TraceEvent(
+        step=node, latency_ms=round((time.perf_counter() - started) * 1000, 1),
+        model=", ".join(models) or None,
+        tokens_in=sum(u.tokens_in for u in usage), tokens_out=sum(u.tokens_out for u in usage),
+        cost_usd=round(sum(cost_usd(u) for u in usage), COST_DECIMALS),
+    )
 
 
 def _guard_steps(state: AgentState, max_steps: int) -> AgentState:
@@ -54,6 +67,7 @@ async def run_turn(session_id: str, message: str, deps: Deps) -> AsyncIterator[E
             step = await NODES[node](state, deps)
         except LLMError as exc:
             yield StatusEvent(step=node, state="failed", label=label)
+            yield _trace(node, started)
             yield ErrorEvent(code=exc.code, message="The assistant is temporarily unavailable", retryable=exc.retryable)
             state = replace(state, node=Node.RESPOND, reply=templates.MODEL_UNAVAILABLE,
                             steps_taken=state.steps_taken + 1)
@@ -61,7 +75,7 @@ async def run_turn(session_id: str, message: str, deps: Deps) -> AsyncIterator[E
         for event in step.events:
             yield event
         yield StatusEvent(step=node, state="completed", label=label)
-        yield TraceEvent(step=node, latency_ms=round((time.perf_counter() - started) * 1000, 1))
+        yield _trace(node, started, step.usage)
         state = replace(step.state, steps_taken=step.state.steps_taken + 1)
 
     deps.sessions.save(finish_turn(state, state.reply or ""))

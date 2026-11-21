@@ -48,6 +48,7 @@ class TraceEvent(Event):
     event = "trace"
     step: str
     latency_ms: float
+    model: str | None = None
     tokens_in: int = 0
     tokens_out: int = 0
     cost_usd: float = 0.0

@@ -8,6 +8,6 @@ export type AgentEvent =
   | { event: "token"; data: { text: string } }
   | { event: "tool"; data: { name: string; input: Record<string, unknown>; output: Record<string, unknown> | null; ok: boolean } }
   | { event: "escalation"; data: { reason: string; ticket_id: string | null; priority: Priority | null } }
-  | { event: "trace"; data: { step: string; latency_ms: number; tokens_in: number; tokens_out: number; cost_usd: number } }
+  | { event: "trace"; data: { step: string; latency_ms: number; model: string | null; tokens_in: number; tokens_out: number; cost_usd: number } }
   | { event: "error"; data: { code: string; message: string; retryable: boolean } }
   | { event: "done"; data: { session_id: string } };
