@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ChatRequestError, streamChat } from "@/lib/api";
-import { applyEvent, failTurn, initialConversation, sessionTotals, startTurn, type Conversation } from "@/lib/conversation";
+import { applyEvent, failTurn, initialConversation, sessionTotals, startTurn, type Channel, type Conversation } from "@/lib/conversation";
 import { getServerSessionId, getSessionId, resetSessionId, subscribeSessionId } from "@/lib/session";
 import { Composer } from "./chat/Composer";
 import { MessageBubble } from "./chat/MessageBubble";
@@ -9,6 +9,9 @@ import { TraceDrawer } from "./observability/TraceDrawer";
 import { VoicePanel } from "./voice/VoicePanel";
 
 type Mode = "chat" | "voice";
+
+const AGENT_BUSY = "The support agent is still working on the last request. Ask the customer to wait a moment.";
+const AGENT_FAILED = "The support agent couldn't be reached just now. Ask the customer to try again in a moment.";
 
 const SUGGESTIONS = [
   "What is your refund policy for Pro plans?",
@@ -31,25 +34,41 @@ export function SupportConsole() {
     endRef.current?.scrollIntoView({ block: "end" });
   }, [conversation.messages]);
 
-  async function send(text: string) {
-    if (!sessionId || conversation.busy) return;
+  const busyRef = useRef(false);
+
+  /** One agent turn, from the chat box or a voice tool call. Resolves with the reply text; never throws. */
+  async function runTurn(text: string, via: Channel): Promise<string> {
+    if (!sessionId) return AGENT_FAILED;
+    if (busyRef.current) return AGENT_BUSY;
+    busyRef.current = true;
     const controller = new AbortController();
     abortRef.current = controller;
-    setConversation((c) => startTurn(c, text));
+    setConversation((c) => startTurn(c, text, via));
+    let reply = "";
     try {
       for await (const event of streamChat(sessionId, text, controller.signal)) {
+        if (event.event === "token") reply += event.data.text;
         setConversation((c) => applyEvent(c, event));
       }
     } catch (error: unknown) {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted) return AGENT_FAILED;
       const retryable = error instanceof ChatRequestError ? error.retryable : true;
       const message = error instanceof Error ? error.message : "Something went wrong. Please try again.";
       setConversation((c) => failTurn(c, { code: "network", message, retryable }));
-      return;
+      return AGENT_FAILED;
+    } finally {
+      busyRef.current = false;
     }
     // A stream that closed without `done` must not leave the input locked.
     setConversation((c) => (c.busy ? failTurn(c, { code: "incomplete", message: "The reply was cut off.", retryable: true }) : c));
+    return reply || AGENT_FAILED;
   }
+
+  function send(text: string) {
+    if (!conversation.busy) void runTurn(text, "chat");
+  }
+
+  const askFromVoice = (message: string) => runTurn(message, "voice");
 
   function resetSession() {
     abortRef.current?.abort();
@@ -88,7 +107,7 @@ export function SupportConsole() {
       <div className="flex min-h-0 flex-1">
         {mode === "voice" ? (
           <main className="flex min-w-0 flex-1 flex-col">
-            <VoicePanel key={sessionId} sessionId={sessionId} />
+            <VoicePanel key={sessionId} sessionId={sessionId} ask={askFromVoice} />
           </main>
         ) : (
           <main className="flex min-w-0 flex-1 flex-col">

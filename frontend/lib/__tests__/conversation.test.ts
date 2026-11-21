@@ -71,4 +71,9 @@ describe("conversation reducer", () => {
     expect(totals.costUsd).toBeCloseTo(0.0033);
     expect(totals.tokensIn).toBe(920);
   });
+
+  it("tags a turn that came from voice, so the shared transcript shows where it started", () => {
+    const state = startTurn(startTurn(initialConversation(), "Hi"), "Refund my last charge", "voice");
+    expect(state.messages.map((m) => m.via)).toEqual(["chat", "chat", "voice", "voice"]);
+  });
 });

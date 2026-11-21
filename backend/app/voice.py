@@ -1,8 +1,11 @@
 """Short-lived Gemini Live tokens for the browser.
 
 The browser talks to Gemini Live directly (log D3), so it must never hold the real API key.
-The backend mints a single-use ephemeral token with the model, system prompt and transcription
-settings locked: a client that sends a different config gets the locked one anyway.
+The backend mints a single-use ephemeral token with the model, system prompt, transcription
+settings and the one voice tool locked: a client that sends a different config gets the locked one anyway.
+
+Voice has one tool, `ask_support_agent`. The browser answers it by running a normal chat turn
+on the same session, so voice gets every guard, template and trace the chat agent has (log D29).
 """
 
 import logging
@@ -20,6 +23,22 @@ logger = logging.getLogger("support_agent")
 # Ephemeral tokens exist only on v1alpha (google-genai 3.6.1). The browser must connect to the
 # matching BidiGenerateContentConstrained endpoint (frontend/lib/voice/protocol.ts).
 LIVE_API_VERSION = "v1alpha"
+
+VOICE_TOOL_NAME = "ask_support_agent"
+# Kept short: the Live model only needs to know when to call it and what to pass.
+VOICE_TOOL = types.Tool(function_declarations=[types.FunctionDeclaration(
+    name=VOICE_TOOL_NAME,
+    description=("Send the customer's request to the support agent, which can verify identity, look up charges, "
+                 "check policy, issue refunds and open tickets. Returns the reply to read to the customer."),
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={"message": types.Schema(
+            type=types.Type.STRING,
+            description="The customer's request in their own words, including any email and card last 4 digits they said.",
+        )},
+        required=["message"],
+    ),
+)])
 
 
 class VoiceTokenError(Exception):
@@ -45,6 +64,7 @@ def build_token_config(model: str, now: datetime, *, ttl_min: int, new_session_w
         system_instruction=VOICE_SYSTEM_PROMPT,
         input_audio_transcription=types.AudioTranscriptionConfig(),
         output_audio_transcription=types.AudioTranscriptionConfig(),
+        tools=[VOICE_TOOL],
     )
     return types.CreateAuthTokenConfig(
         uses=1,

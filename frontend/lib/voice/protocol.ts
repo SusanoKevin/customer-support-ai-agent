@@ -9,6 +9,12 @@ const LIVE_ENDPOINT =
 export const INPUT_SAMPLE_RATE = 16000; // what Live expects from the microphone
 const DEFAULT_OUTPUT_RATE = 24000; // what Live sends back
 
+export interface ToolCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+}
+
 export type LiveEvent =
   | { type: "ready" }
   | { type: "audio"; data: string; sampleRate: number }
@@ -17,6 +23,8 @@ export type LiveEvent =
   | { type: "interrupted" }
   | { type: "turn_complete" }
   | { type: "usage"; promptTokens: number; responseTokens: number; thoughtsTokens: number }
+  | { type: "tool_call"; calls: ToolCall[] }
+  | { type: "tool_cancelled"; ids: string[] }
   | { type: "go_away"; timeLeft: string }
   | { type: "protocol_error" };
 
@@ -30,6 +38,10 @@ export function setupMessage(model: string): string {
 
 export function audioChunkMessage(base64Pcm: string): string {
   return JSON.stringify({ realtimeInput: { audio: { data: base64Pcm, mimeType: `audio/pcm;rate=${INPUT_SAMPLE_RATE}` } } });
+}
+
+export function toolResponseMessage(id: string, name: string, response: Record<string, unknown>): string {
+  return JSON.stringify({ toolResponse: { functionResponses: [{ id, name, response }] } });
 }
 
 interface Part {
@@ -47,6 +59,14 @@ interface ServerMessage {
   };
   usageMetadata?: { promptTokenCount?: number; responseTokenCount?: number; thoughtsTokenCount?: number };
   goAway?: { timeLeft?: string };
+  toolCall?: { functionCalls?: { id?: string; name?: string; args?: Record<string, unknown> }[] };
+  toolCallCancellation?: { ids?: string[] };
+}
+
+function toolCalls(raw: NonNullable<ServerMessage["toolCall"]>): ToolCall[] {
+  return (raw.functionCalls ?? [])
+    .filter((c) => typeof c.id === "string" && typeof c.name === "string")
+    .map((c) => ({ id: c.id!, name: c.name!, args: c.args ?? {} }));
 }
 
 function sampleRateOf(mimeType: string | undefined): number {
@@ -89,6 +109,8 @@ export function parseServerMessage(raw: string): LiveEvent[] {
       thoughtsTokens: u.thoughtsTokenCount ?? 0,
     });
   }
+  if (msg.toolCall) events.push({ type: "tool_call", calls: toolCalls(msg.toolCall) });
+  if (msg.toolCallCancellation) events.push({ type: "tool_cancelled", ids: msg.toolCallCancellation.ids ?? [] });
   if (msg.goAway) events.push({ type: "go_away", timeLeft: msg.goAway.timeLeft ?? "soon" });
   return events;
 }

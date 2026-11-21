@@ -1,7 +1,7 @@
 // Voice panel state as a pure reducer, like lib/conversation.ts. VoiceSession dispatches; components only render.
 import type { LiveEvent } from "./protocol";
 
-export type VoiceStatus = "idle" | "connecting" | "listening" | "speaking" | "ended" | "error";
+export type VoiceStatus = "idle" | "connecting" | "listening" | "checking" | "speaking" | "ended" | "error";
 
 export interface VoiceLine {
   id: string;
@@ -90,6 +90,10 @@ function applyLive(state: VoiceState, event: LiveEvent): VoiceState {
         },
       };
     }
+    case "tool_call":
+      return { ...state, status: "checking" };
+    case "tool_cancelled":
+      return state; // the agent turn still finishes and shows in the chat transcript
     case "go_away":
       return { ...state, notice: `The voice session will close in ${event.timeLeft}.` };
     case "protocol_error":

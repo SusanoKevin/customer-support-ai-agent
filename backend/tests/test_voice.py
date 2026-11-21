@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from app.agent.templates import VOICE_SYSTEM_PROMPT
 from app.config import Settings
 from app.main import create_app
-from app.voice import GeminiVoiceTokenIssuer, VoiceToken, VoiceTokenError, build_token_config
+from app.voice import VOICE_TOOL_NAME, GeminiVoiceTokenIssuer, VoiceToken, VoiceTokenError, build_token_config
 from tests.test_orchestrator import make_deps
 
 NOW = datetime(2026, 11, 22, 12, 0, tzinfo=UTC)
@@ -93,11 +93,21 @@ def test_token_config_locks_model_prompt_and_transcription():
     assert cfg.lock_additional_fields == []
 
 
-def test_voice_prompt_keeps_account_actions_in_chat_until_tools_exist():
-    """Voice has no tools yet (Day 5), so it must send account work to chat instead of answering it."""
+def test_token_config_locks_one_tool_that_delegates_to_the_chat_agent():
+    """Voice gets exactly one tool. Account work goes through the same orchestrator as chat (log D29)."""
+    cfg = build_token_config("gemini-3.8-live", NOW, ttl_min=30, new_session_window_s=60)
+    tools = cfg.live_connect_constraints.config.tools
+    declarations = [d for t in tools for d in t.function_declarations]
+    assert [d.name for d in declarations] == [VOICE_TOOL_NAME]
+    assert declarations[0].parameters.required == ["message"]
+    assert "approve_refund" not in str(tools) and "issue_refund" not in str(tools)
+
+
+def test_voice_prompt_sends_account_work_to_the_tool_and_never_decides_itself():
     prompt = VOICE_SYSTEM_PROMPT.lower()
-    assert "refund" in prompt and "chat" in prompt
-    assert "never" in prompt
+    assert VOICE_TOOL_NAME in prompt
+    assert "refund" in prompt and "never" in prompt
+    assert "one moment" in prompt  # filler line while the agent works
 
 
 class _FakeAuthTokens:

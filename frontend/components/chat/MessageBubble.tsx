@@ -13,7 +13,8 @@ interface MessageBubbleProps {
 export function MessageBubble({ message, live, onRetry }: MessageBubbleProps) {
   if (message.role === "user") {
     return (
-      <div className="flex justify-end">
+      <div className="flex flex-col items-end gap-1">
+        {message.via === "voice" && <span className="text-[11px] text-muted">Said in voice</span>}
         <p className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-sm bg-accent px-4 py-2 text-sm text-on-accent">
           {message.text}
         </p>

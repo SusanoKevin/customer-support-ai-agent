@@ -6,9 +6,12 @@ export interface ToolCall { name: string; input: Record<string, unknown>; output
 export interface Escalation { reason: string; ticket_id: string | null; priority: Priority | null }
 export interface TurnError { code: string; message: string; retryable: boolean }
 
+export type Channel = "chat" | "voice";
+
 export interface Message {
   id: string;
   role: "user" | "assistant";
+  via: Channel;
   text: string;
   steps: Step[];
   tools: ToolCall[];
@@ -32,14 +35,15 @@ export function initialConversation(): Conversation {
   return { messages: [], turns: [], busy: false, lastPrompt: null };
 }
 
-function message(id: string, role: Message["role"], text: string): Message {
-  return { id, role, text, steps: [], tools: [], escalation: null, error: null };
+function message(id: string, role: Message["role"], text: string, via: Channel): Message {
+  return { id, role, via, text, steps: [], tools: [], escalation: null, error: null };
 }
 
-export function startTurn(state: Conversation, prompt: string): Conversation {
+/** Voice turns run through the same agent, so they land in the same transcript and drawer (log D29). */
+export function startTurn(state: Conversation, prompt: string, via: Channel = "chat"): Conversation {
   const n = state.turns.length + 1;
   return {
-    messages: [...state.messages, message(`u${n}`, "user", prompt), message(`a${n}`, "assistant", "")],
+    messages: [...state.messages, message(`u${n}`, "user", prompt, via), message(`a${n}`, "assistant", "", via)],
     turns: [...state.turns, { id: `t${n}`, prompt, rows: [] }],
     busy: true,
     lastPrompt: prompt,

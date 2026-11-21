@@ -15,3 +15,8 @@ export function splitCitations(text: string): Segment[] {
   if (last < text.length) segments.push({ kind: "text", value: text.slice(last) });
   return segments;
 }
+
+/** Voice reads replies aloud, so chunk ids must go (the drawer and chat still show them). */
+export function stripCitations(text: string): string {
+  return text.replace(/\s*\[[a-z0-9_-]+:\d+:\d+\]/g, "").trim();
+}

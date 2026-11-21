@@ -100,4 +100,12 @@ describe("voice reducer", () => {
     const s = run([{ type: "live", event: { type: "ready" } }, { type: "live", event: { type: "protocol_error" } }]);
     expect(s.status).toBe("listening");
   });
+
+  it("shows that the support agent is working while a tool call runs, then speaks the answer", () => {
+    const call = { id: "c1", name: "ask_support_agent", args: { message: "refund" } };
+    const checking = run([{ type: "live", event: { type: "ready" } }, { type: "live", event: { type: "tool_call", calls: [call] } }]);
+    expect(checking.status).toBe("checking");
+    const speaking = voiceReducer(checking, { type: "live", event: { type: "audio", data: "AA==", sampleRate: 24000 } });
+    expect(speaking.status).toBe("speaking");
+  });
 });

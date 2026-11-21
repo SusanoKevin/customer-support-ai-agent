@@ -1,4 +1,4 @@
-"""Tools the model may trigger, by name. Chat (orchestrator) and voice (/api/tools/{name}) share this list.
+"""Tools the orchestrator may trigger, by name. Voice reaches them only through a chat turn (log D29).
 
 `approve_refund` is deliberately absent: only a human reviewer can approve beyond the tier
 limit, so no model, prompt or voice call can reach it.

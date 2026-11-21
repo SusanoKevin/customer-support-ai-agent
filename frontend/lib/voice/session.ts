@@ -2,7 +2,8 @@
 // Imperative glue only. Protocol, sample conversion and UI state live in tested pure modules.
 import { ChatRequestError, fetchVoiceToken } from "../api";
 import { base64ToBytes, bytesToBase64, downsample, floatToPcm16, pcm16ToFloat } from "./pcm";
-import { INPUT_SAMPLE_RATE, audioChunkMessage, liveUrl, parseServerMessage, setupMessage } from "./protocol";
+import { INPUT_SAMPLE_RATE, audioChunkMessage, liveUrl, parseServerMessage, setupMessage, toolResponseMessage, type ToolCall } from "./protocol";
+import { answerToolCall, type AskAgent } from "./tools";
 import type { VoiceAction } from "./voiceState";
 
 const WORKLET_URL = "/worklets/pcm-capture.js";
@@ -27,10 +28,14 @@ export class VoiceSession {
   private isStreaming = false;
   private isStopping = false;
   private readonly startAbort = new AbortController();
+  private readonly pendingCalls = new Set<string>();
   micAnalyser: AnalyserNode | null = null;
   outputAnalyser: AnalyserNode | null = null;
 
-  constructor(private readonly dispatch: Dispatch) {}
+  constructor(
+    private readonly dispatch: Dispatch,
+    private readonly ask: AskAgent = async () => "The support agent isn't connected.",
+  ) {}
 
   /** Each await below can outlast an End call, so every step re-checks `isStopping` (log B3). */
   async start(sessionId: string): Promise<void> {
@@ -98,6 +103,8 @@ export class VoiceSession {
         if (event.type === "ready") this.isStreaming = true;
         else if (event.type === "audio") this.play(event.data, event.sampleRate);
         else if (event.type === "interrupted") this.stopPlayback();
+        else if (event.type === "tool_call") event.calls.forEach((call) => void this.answer(call));
+        else if (event.type === "tool_cancelled") event.ids.forEach((id) => this.pendingCalls.delete(id));
         else if (event.type === "protocol_error") console.warn("Unreadable Live frame", raw.slice(0, 200));
         this.dispatch({ type: "live", event });
       }
@@ -108,6 +115,15 @@ export class VoiceSession {
       if (byUs || e.code === NORMAL_CLOSE) this.dispatch({ type: "ended" });
       else this.fail(`The voice session closed unexpectedly (${e.code}${e.reason ? `: ${e.reason}` : ""}).`, true);
     };
+  }
+
+  /** Live waits for the reply. A cancelled call (customer talked over it) still finishes in the chat transcript. */
+  private async answer(call: ToolCall): Promise<void> {
+    this.pendingCalls.add(call.id);
+    const response = await answerToolCall(call, this.ask);
+    const isWanted = this.pendingCalls.delete(call.id);
+    if (!isWanted || this.isStopping || this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(toolResponseMessage(call.id, call.name, response));
   }
 
   private sendMic(frame: Float32Array): void {
@@ -154,6 +170,7 @@ export class VoiceSession {
 
   private cleanup(): void {
     this.isStreaming = false;
+    this.pendingCalls.clear();
     this.stopPlayback();
     if (this.capture) this.capture.port.onmessage = null;
     this.stream?.getTracks().forEach((t) => t.stop());

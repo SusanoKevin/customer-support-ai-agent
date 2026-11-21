@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { VoiceSession } from "@/lib/voice/session";
+import type { AskAgent } from "@/lib/voice/tools";
 import { initialVoice, voiceReducer, type VoiceLine, type VoiceStatus } from "@/lib/voice/voiceState";
 import { Waveform } from "./Waveform";
 
@@ -8,18 +9,20 @@ const STATUS_LABEL: Record<VoiceStatus, string> = {
   idle: "Ready when you are",
   connecting: "Connecting...",
   listening: "Listening",
+  checking: "Checking with the support agent...",
   speaking: "Speaking (talk to interrupt)",
   ended: "Call ended",
   error: "Voice stopped",
 };
 
-const ACTIVE: ReadonlySet<VoiceStatus> = new Set(["connecting", "listening", "speaking"]);
+const ACTIVE: ReadonlySet<VoiceStatus> = new Set(["connecting", "listening", "checking", "speaking"]);
 
 interface VoicePanelProps {
   sessionId: string;
+  ask: AskAgent;
 }
 
-export function VoicePanel({ sessionId }: VoicePanelProps) {
+export function VoicePanel({ sessionId, ask }: VoicePanelProps) {
   const [state, dispatch] = useReducer(voiceReducer, undefined, initialVoice);
   const sessionRef = useRef<VoiceSession | null>(null);
   const statusRef = useRef(state.status);
@@ -44,7 +47,7 @@ export function VoicePanel({ sessionId }: VoicePanelProps) {
 
   function start() {
     if (!sessionId || isActive) return;
-    const session = new VoiceSession(dispatch);
+    const session = new VoiceSession(dispatch, ask);
     sessionRef.current = session;
     void session.start(sessionId);
   }
@@ -89,7 +92,7 @@ export function VoicePanel({ sessionId }: VoicePanelProps) {
           )}
           {state.notice && <p className="mt-1 text-xs text-warn">{state.notice}</p>}
           <p className="mt-2 text-[11px] leading-snug text-muted">
-            Voice can explain what we help with. To check your account or a refund, use the chat for now.
+            Voice uses the same support agent as the chat, so it can check your account and refunds. Every step shows in the chat and the trace.
             {state.usage.reports > 0 &&
               ` Tokens this call: ${(state.usage.promptTokens + state.usage.responseTokens).toLocaleString()}.`}
           </p>

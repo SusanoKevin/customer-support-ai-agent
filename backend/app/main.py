@@ -1,4 +1,4 @@
-"""FastAPI entrypoint. `/api/chat` streams agent turns; `/api/voice/token` mints Live tokens; tools and trace fill in on Day 5."""
+"""FastAPI entrypoint. `/api/chat` streams agent turns (chat and voice both use it, log D29); `/api/voice/token` mints Live tokens."""
 
 import logging
 from collections.abc import AsyncIterator
@@ -133,11 +133,6 @@ def create_app(deps: Deps | None = None, settings: Settings | None = None) -> Fa
         response.headers["Cache-Control"] = "no-store"
         return VoiceTokenResponse(token=minted.token, model=minted.model, expires_at=minted.expires_at.isoformat(),
                                   new_session_expires_at=minted.new_session_expires_at.isoformat())
-
-    @app.post("/api/tools/{name}")
-    async def run_tool(name: str):
-        """TODO Day 5: voice tool calls, dispatched through app.tools.registry.MODEL_TOOLS only."""
-        raise NotImplementedError
 
     @app.get("/api/sessions/{session_id}/trace")
     async def session_trace(session_id: str):

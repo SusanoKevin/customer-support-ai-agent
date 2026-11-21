@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { audioChunkMessage, liveUrl, parseServerMessage, setupMessage } from "../protocol";
+import { audioChunkMessage, liveUrl, parseServerMessage, setupMessage, toolResponseMessage } from "../protocol";
 
 describe("Live wire protocol", () => {
   it("puts the ephemeral token in the query string of the constrained v1alpha endpoint", () => {
@@ -61,5 +61,24 @@ describe("Live wire protocol", () => {
   it("defaults the audio rate to 24 kHz when the mime type has none", () => {
     const raw = '{"serverContent":{"modelTurn":{"parts":[{"inlineData":{"mimeType":"audio/pcm","data":"QQ=="}}]}}}';
     expect(parseServerMessage(raw)).toEqual([{ type: "audio", data: "QQ==", sampleRate: 24000 }]);
+  });
+
+  it("parses a tool call with its id, name and arguments", () => {
+    const raw = JSON.stringify({
+      toolCall: { functionCalls: [{ id: "call_1", name: "ask_support_agent", args: { message: "refund please" } }] },
+    });
+    expect(parseServerMessage(raw)).toEqual([
+      { type: "tool_call", calls: [{ id: "call_1", name: "ask_support_agent", args: { message: "refund please" } }] },
+    ]);
+  });
+
+  it("parses a tool call cancellation", () => {
+    expect(parseServerMessage('{"toolCallCancellation":{"ids":["call_1"]}}')).toEqual([{ type: "tool_cancelled", ids: ["call_1"] }]);
+  });
+
+  it("wraps a tool result in the toolResponse frame Live expects", () => {
+    expect(JSON.parse(toolResponseMessage("call_1", "ask_support_agent", { reply: "Done." }))).toEqual({
+      toolResponse: { functionResponses: [{ id: "call_1", name: "ask_support_agent", response: { reply: "Done." } }] },
+    });
   });
 });
