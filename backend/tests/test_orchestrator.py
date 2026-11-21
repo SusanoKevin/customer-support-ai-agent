@@ -246,6 +246,14 @@ async def test_open_ticket_blocks_refund_actions_but_not_questions():  # S9.2, S
     assert text(question) == ANSWER
 
 
+async def test_open_ticket_still_answers_refund_status():  # review M1: a read-only question
+    deps = make_deps(C("refund_request", amount_usd=80, **MAYA), C("refund_status"))
+    await turn(deps)
+    status = await turn(deps)
+    assert "get_refund_status" in tools(status)
+    assert agent_refunds(deps) == []
+
+
 # --- guardrails and failures ------------------------------------------------
 
 async def test_uncited_answer_is_regenerated_once_then_escalated():

@@ -53,3 +53,27 @@ export function subscribeSessionId(listener: () => void): () => void {
     listeners.delete(listener);
   };
 }
+
+// One workspace id per browser, kept across tabs and "New session", so each visitor gets their own copy
+// of the demo billing data on the server and their own refunds still count on a new session.
+const WORKSPACE_KEY = "support-workspace-id";
+let workspace: string | null = null;
+
+export function getWorkspaceId(): string {
+  if (workspace !== null) return workspace;
+  try {
+    const saved = localStorage.getItem(WORKSPACE_KEY);
+    workspace = saved && ID_PATTERN.test(saved) ? saved : null;
+  } catch {
+    // Storage blocked: an id for this page view still keeps the visitor's turns together.
+  }
+  if (workspace === null) {
+    workspace = `w-${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
+    try {
+      localStorage.setItem(WORKSPACE_KEY, workspace);
+    } catch {
+      // As above.
+    }
+  }
+  return workspace;
+}

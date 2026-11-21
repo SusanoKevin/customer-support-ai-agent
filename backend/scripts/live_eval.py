@@ -316,7 +316,8 @@ async def main(args: argparse.Namespace) -> int:
     results: list[dict] = []
     try:
         llm = GeminiLLM(settings.gemini_api_key, settings.gemini_classify_model, settings.gemini_answer_model,
-                        settings.llm_timeout_s, answer_thinking_level=args.thinking)
+                        settings.llm_timeout_s, answer_thinking_level=args.thinking,
+                        fallback_model=settings.gemini_fallback_model)
         embedder = GeminiEmbedder(settings.gemini_api_key, settings.gemini_embed_model, settings.embed_dim)
         records = load_billing()
         base = Deps(llm=llm, retriever=PgVectorRetriever(pool, embedder), records=records,

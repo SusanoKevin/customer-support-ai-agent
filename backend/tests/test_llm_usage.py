@@ -8,6 +8,7 @@ import httpx
 
 from app.agent.llm import GeminiLLM, LLMError, Usage, network_error, timeout_error, usage_from_response
 from app.agent.pricing import cost_usd
+from app.config import Settings
 
 
 def test_cost_uses_list_price_per_million_tokens():
@@ -45,8 +46,8 @@ def test_timeout_becomes_retryable_error():
 class _ScriptedGemini(GeminiLLM):
     """GeminiLLM with the network call replaced by a per-model script."""
 
-    def __init__(self, outcomes: dict[str, list]) -> None:
-        super().__init__("test-key", "lite", "flash", timeout_s=1.0)
+    def __init__(self, outcomes: dict[str, list], *, answer: str = "flash", fallback: str | None = None) -> None:
+        super().__init__("test-key", "lite", answer, timeout_s=1.0, fallback_model=fallback)
         self.outcomes = outcomes
         self.calls: list[str] = []
 
@@ -128,3 +129,19 @@ async def test_no_thinking_level_leaves_the_model_default():
     llm = _RecordingGemini({"flash": ["Answer [refunds:1:0]"]}, thinking=None)
     await llm.generate("system", "prompt")
     assert llm.configs[0].thinking_config is None
+
+
+def test_lite_answers_by_default_with_flash_as_the_fallback():  # review H2, log P11
+    s = Settings(_env_file=None)
+    assert (s.gemini_classify_model, s.gemini_answer_model, s.gemini_fallback_model) == (
+        "gemini-3.5-flash-lite", "gemini-3.5-flash-lite", "gemini-3.8-flash")
+
+
+async def test_fallback_model_backs_up_both_calls_when_one_model_does_both():
+    label = '{"intent": "policy_question", "search_query": "refunds"}'
+    llm = _ScriptedGemini({"lite": [BUSY, BUSY], "flash": [label, "Answer [refunds:1:0]"]}, answer="lite",
+                          fallback="flash")
+    await llm.classify("How do refunds work?", "")
+    reply = await llm.generate("system", "prompt")
+    assert llm.calls == ["lite", "flash", "lite", "flash"]
+    assert reply.usage.model == "flash"

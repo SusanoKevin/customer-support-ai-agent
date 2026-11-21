@@ -109,11 +109,12 @@ def _llm_error(exc: errors.APIError) -> LLMError:
 class GeminiLLM:
     """Routes the short labelling call to a small model and the answer to a stronger one (log P3).
 
-    Each model is the other's fallback when it is busy, so one overloaded model does not end the turn.
+    A busy model falls back to `fallback_model`, or without one, each model is the other's fallback,
+    so one overloaded model does not end the turn.
     """
 
     def __init__(self, api_key: str, classify_model: str, answer_model: str, timeout_s: float,
-                 answer_thinking_level: str | None = None) -> None:
+                 answer_thinking_level: str | None = None, fallback_model: str | None = None) -> None:
         if not api_key:
             raise ValueError("GEMINI_API_KEY is not set in backend/.env")
         http_options = types.HttpOptions(
@@ -122,6 +123,7 @@ class GeminiLLM:
         self._client = genai.Client(api_key=api_key, http_options=http_options)
         self._classify_model = classify_model
         self._answer_model = answer_model
+        self._fallback_model = fallback_model or None
         self._timeout_s = timeout_s
         self._answer_thinking_level = answer_thinking_level or None
 
@@ -161,7 +163,8 @@ class GeminiLLM:
             system_instruction=CLASSIFY_SYSTEM, response_mime_type="application/json",
             response_schema=Classification, temperature=0.0,
         )
-        response, model = await self._call_with_fallback(self._classify_model, self._answer_model, prompt, config)
+        response, model = await self._call_with_fallback(
+            self._classify_model, self._fallback_model or self._answer_model, prompt, config)
         try:
             label = Classification.model_validate_json(response.text or "{}")
         except ValidationError as exc:
@@ -176,6 +179,7 @@ class GeminiLLM:
             thinking = types.ThinkingConfig(thinking_level=self._answer_thinking_level)
             answer_config = config.model_copy(update={"thinking_config": thinking})
         response, model = await self._call_with_fallback(
-            self._answer_model, self._classify_model, prompt, answer_config, fallback_config=config,
+            self._answer_model, self._fallback_model or self._classify_model, prompt, answer_config,
+            fallback_config=config,
         )
         return LLMReply((response.text or "").strip(), usage_from_response(response, model))

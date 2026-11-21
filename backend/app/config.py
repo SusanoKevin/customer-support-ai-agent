@@ -11,9 +11,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", frozen=True)
 
     gemini_api_key: str = ""
-    # Small model labels the message, stronger model writes the answer (log P3).
+    # Flash-Lite labels and answers; 3.8 Flash backs both up when Lite is busy (log P3, P11).
     gemini_classify_model: str = "gemini-3.5-flash-lite"
-    gemini_answer_model: str = "gemini-3.8-flash"
+    gemini_answer_model: str = "gemini-3.5-flash-lite"
+    gemini_fallback_model: str = "gemini-3.8-flash"
     llm_timeout_s: float = Field(default=20.0, gt=0, le=120)
     # Empty = the model's default. "low" trades reasoning depth for speed (log P10); "minimal" 400s on 3.8 Flash.
     gemini_answer_thinking_level: Literal["", "low", "medium", "high"] = ""

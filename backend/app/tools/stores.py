@@ -71,6 +71,25 @@ class InMemoryRefundLedger:
         self._refunds = (*self._refunds, refund)
 
 
+class DemoWorkspaces:
+    """One refund ledger and ticket store per visitor, seeded from the demo billing data.
+
+    The public demo shares one server, so with a single ledger the first visitor's refund blocks the next
+    visitor's identical demo (review H1). Keyed by a browser-held workspace id, so "New session" in one
+    browser keeps that visitor's refunds and the 90-day rule still holds for them.
+    """
+
+    def __init__(self, seed: tuple[Refund, ...]) -> None:
+        self._seed = tuple(seed)
+        self._stores: dict[str, tuple[InMemoryRefundLedger, "InMemoryTicketStore"]] = {}
+
+    def stores_for(self, workspace_id: str) -> tuple["InMemoryRefundLedger", "InMemoryTicketStore"]:
+        if workspace_id not in self._stores:
+            fresh = (InMemoryRefundLedger(self._seed), InMemoryTicketStore())
+            self._stores = {**self._stores, workspace_id: fresh}
+        return self._stores[workspace_id]
+
+
 class InMemoryTicketStore:
     def __init__(self) -> None:
         self._tickets: dict[str, Ticket] = {}

@@ -34,7 +34,19 @@ describe("streamChat", () => {
 
     expect(events.map((e) => e.event)).toEqual(["token", "done"]);
     const [, init] = fetchMock.mock.calls[0];
-    expect(JSON.parse(init.body)).toEqual({ session_id: "s-12345678", message: "hello" });
+    expect(JSON.parse(init.body)).toMatchObject({ session_id: "s-12345678", message: "hello" });
+  });
+
+  it("sends the same browser workspace id on every turn, whatever the session", async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(streamOf([]), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await collect(streamChat("s-12345678", "one"));
+    await collect(streamChat("s-87654321", "two"));
+
+    const [first, second] = fetchMock.mock.calls.map(([, init]) => JSON.parse(init.body).workspace_id);
+    expect(first).toMatch(/^w-[a-f0-9]{24}$/);
+    expect(second).toBe(first);
   });
 
   it("reports a network failure as retryable", async () => {

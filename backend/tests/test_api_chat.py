@@ -1,10 +1,13 @@
 """/api/chat over HTTP with injected fakes: event order, validation, and the error path."""
 
+import asyncio
 import json
+from dataclasses import replace
 
 import httpx
 
 from app.main import create_app
+from app.tools.stores import DemoWorkspaces
 from tests.test_orchestrator import MAYA, C, make_deps
 
 
@@ -50,3 +53,52 @@ async def test_unexpected_failure_still_ends_with_error_then_done():
     assert [name for name, _ in events][-2:] == ["error", "done"]
     assert events[-2][1]["code"] == "internal_error"
     assert "boom" not in json.dumps(events)  # internal details stay in the server log
+
+
+async def test_unfinished_trace_route_is_not_served():  # review M3
+    transport = httpx.ASGITransport(app=create_app(deps=make_deps()))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        assert (await client.get("/api/sessions/session-0001/trace")).status_code == 404
+
+
+class _SlowLLM:
+    """Yields to the event loop in classify, like a real network call, so concurrent turns interleave."""
+
+    def __init__(self, inner) -> None:
+        self.inner = inner
+
+    async def classify(self, message, recent_turns):
+        await asyncio.sleep(0.05)
+        return await self.inner.classify(message, recent_turns)
+
+    async def generate(self, system, prompt):
+        return await self.inner.generate(system, prompt)
+
+
+async def test_turns_on_one_session_run_one_at_a_time():  # review M2, log L13
+    deps = make_deps(C("provide_identity", **MAYA), C("refund_request", amount_usd=20, charge_ref="in_m1"), C("other"))
+    deps = replace(deps, llm=_SlowLLM(deps.llm))
+    app = create_app(deps=deps)
+    await _post(app, {"session_id": "session-0001", "message": "maya@example.com 4242"})
+    await asyncio.gather(_post(app, {"session_id": "session-0001", "message": "refund $20 on in_m1"}),
+                         _post(app, {"session_id": "session-0001", "message": "hello"}))
+    state = deps.sessions.get("session-0001")
+    customer = [t for role, t in state.history if role == "customer"]
+    assert state.turn == 3
+    assert sorted(customer[1:]) == ["hello", "refund $20 on in_m1"]
+
+
+def _refund_ok(response: httpx.Response) -> bool:
+    return any(name == "tool" and data["name"] == "issue_refund" and data["ok"]
+               for name, data in _parse_sse(response.text))
+
+
+async def test_each_visitor_gets_their_own_copy_of_the_demo_billing_data():  # review H1
+    refund = C("refund_request", amount_usd=30, charge_ref="in_m1", **MAYA)
+    deps = make_deps(refund, refund, refund)
+    app = create_app(deps=replace(deps, workspaces=DemoWorkspaces(deps.records.refunds)))
+    first = await _post(app, {"session_id": "session-a001", "workspace_id": "visitor-a1", "message": "refund"})
+    other = await _post(app, {"session_id": "session-b001", "workspace_id": "visitor-b1", "message": "refund"})
+    again = await _post(app, {"session_id": "session-a002", "workspace_id": "visitor-a1", "message": "refund"})
+    assert _refund_ok(first) and _refund_ok(other)
+    assert not _refund_ok(again)  # one visitor's "New session" keeps their refund history

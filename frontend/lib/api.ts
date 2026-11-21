@@ -1,4 +1,5 @@
 import type { AgentEvent } from "./events";
+import { getWorkspaceId } from "./session";
 import { SseParser } from "./sse";
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
@@ -21,7 +22,7 @@ export async function* streamChat(sessionId: string, message: string, signal?: A
     response = await fetch(`${API_BASE}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json", accept: "text/event-stream" },
-      body: JSON.stringify({ session_id: sessionId, message }),
+      body: JSON.stringify({ session_id: sessionId, message, workspace_id: getWorkspaceId() }),
       signal,
     });
   } catch {

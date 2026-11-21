@@ -89,7 +89,8 @@ def _refresh_mode(state: AgentState, deps: Deps) -> AgentState:
 
 def _route(state: AgentState, deps: Deps) -> AgentState:
     intent = state.intent
-    if state.mode == "awaiting_human" and intent in ACTION_INTENTS | {"wants_human", "refund_status"}:
+    # Refund status stays open: it only reads the ledger (review M1).
+    if state.mode == "awaiting_human" and intent in ACTION_INTENTS | {"wants_human"}:
         return _reply(state, templates.awaiting_human(state.open_ticket_id))
     if intent == "wants_human":
         return _escalate(state, "customer_requested_human")

@@ -1,5 +1,6 @@
 """FastAPI entrypoint. `/api/chat` streams agent turns (chat and voice both use it, log D29); `/api/voice/token` mints Live tokens."""
 
+import asyncio
 import logging
 import math
 from collections.abc import AsyncIterator
@@ -22,7 +23,7 @@ from app.rag.embeddings import GeminiEmbedder
 from app.rag.retriever import PgVectorRetriever
 from app.ratelimit import SlidingWindowLimiter
 from app.tools.billing import load_billing
-from app.tools.stores import InMemoryRefundLedger, InMemoryTicketStore
+from app.tools.stores import DemoWorkspaces, InMemoryRefundLedger, InMemoryTicketStore
 from app.voice import GeminiVoiceTokenIssuer, VoiceTokenError, VoiceTokenIssuer
 
 logger = logging.getLogger("support_agent")
@@ -35,6 +36,8 @@ SessionId = Annotated[str, Field(min_length=8, max_length=64, pattern=r"^[A-Za-z
 class ChatRequest(BaseModel):
     session_id: SessionId
     message: str = Field(min_length=1, max_length=2000)
+    # Browser-held id for this visitor's copy of the demo data (review H1). Defaults to the session.
+    workspace_id: SessionId | None = None
 
 
 class VoiceTokenRequest(BaseModel):
@@ -87,7 +90,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.deps = Deps(
         llm=GeminiLLM(settings.gemini_api_key, settings.gemini_classify_model,
                       settings.gemini_answer_model, settings.llm_timeout_s,
-                      answer_thinking_level=settings.gemini_answer_thinking_level),
+                      answer_thinking_level=settings.gemini_answer_thinking_level,
+                      fallback_model=settings.gemini_fallback_model),
         retriever=PgVectorRetriever(pool, embedder),
         records=records,
         ledger=InMemoryRefundLedger(records.refunds),
@@ -95,6 +99,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         sessions=InMemorySessionStore(),
         settings=settings,
         voice=_voice_issuer(settings),
+        workspaces=DemoWorkspaces(records.refunds),
     )
     try:
         yield
@@ -106,11 +111,16 @@ def get_deps(request: Request) -> Deps:
     return request.app.state.deps
 
 
-async def _sse(req: ChatRequest, deps: Deps) -> AsyncIterator[dict[str, str]]:
-    """Every stream ends with `done`, even when something unexpected fails mid-turn."""
+async def _sse(req: ChatRequest, deps: Deps, lock: asyncio.Lock) -> AsyncIterator[dict[str, str]]:
+    """Every stream ends with `done`, even when something unexpected fails mid-turn.
+
+    Turns on one session run one at a time, so a second tab or a voice call during a typed turn
+    waits instead of overwriting the first turn's state (review M2, log L13).
+    """
     try:
-        async for event in run_turn(req.session_id, req.message, deps):
-            yield event.to_sse()
+        async with lock:
+            async for event in run_turn(req.session_id, req.message, deps):
+                yield event.to_sse()
     except Exception:
         logger.exception("Chat turn failed for session %s", req.session_id)
         yield ErrorEvent(code="internal_error", message="Something went wrong on our side.", retryable=True).to_sse()
@@ -134,6 +144,12 @@ def create_app(deps: Deps | None = None, settings: Settings | None = None) -> Fa
     chat_per_session = SlidingWindowLimiter(settings.rate_limit_per_minute, MINUTE_S)
     chat_per_ip = SlidingWindowLimiter(settings.rate_limit_ip_per_minute, MINUTE_S)
     voice_per_ip = SlidingWindowLimiter(settings.voice_tokens_per_hour, HOUR_S)
+    session_locks: dict[str, asyncio.Lock] = {}
+
+    def lock_for(session_id: str) -> asyncio.Lock:
+        if session_id not in session_locks:
+            session_locks[session_id] = asyncio.Lock()
+        return session_locks[session_id]
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -150,7 +166,8 @@ def create_app(deps: Deps | None = None, settings: Settings | None = None) -> Fa
             raise _too_many(wait, "messages")
         chat_per_ip.add(ip)
         chat_per_session.add(req.session_id)
-        return EventSourceResponse(_sse(req, deps))
+        turn_deps = deps.for_workspace(req.workspace_id or req.session_id)
+        return EventSourceResponse(_sse(req, turn_deps, lock_for(req.session_id)))
 
     @app.post("/api/voice/token", response_model=VoiceTokenResponse)
     async def voice_token(req: VoiceTokenRequest, request: Request, response: Response,
@@ -169,11 +186,6 @@ def create_app(deps: Deps | None = None, settings: Settings | None = None) -> Fa
         response.headers["Cache-Control"] = "no-store"
         return VoiceTokenResponse(token=minted.token, model=minted.model, expires_at=minted.expires_at.isoformat(),
                                   new_session_expires_at=minted.new_session_expires_at.isoformat())
-
-    @app.get("/api/sessions/{session_id}/trace")
-    async def session_trace(session_id: str):
-        """TODO Day 5: trace rows for the observability drawer, so a reload can restore them (L17)."""
-        raise NotImplementedError
 
     return app
 
