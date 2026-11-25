@@ -156,14 +156,6 @@ def create_app(deps: Deps | None = None, settings: Settings | None = None) -> Fa
         """Also used to warm the free Render instance before the demo."""
         return {"status": "ok"}
 
-    @app.get("/api/debug/client-ip")
-    async def debug_client_ip(request: Request) -> dict[str, str | None]:
-        """TEMPORARY (L33): shows which proxy header holds the caller's own IP. Remove after checking."""
-        names = ("true-client-ip", "cf-connecting-ip", "x-forwarded-for", "x-real-ip", "forwarded")
-        return {"socket": request.client.host if request.client else None,
-                "resolved": client_ip(request, settings.client_ip_header),
-                **{name: request.headers.get(name) for name in names}}
-
     @app.post("/api/chat")
     async def chat(req: ChatRequest, request: Request, deps: Deps = Depends(get_deps)) -> EventSourceResponse:
         """Capped per session and per IP (log P1). Voice turns come through here too (D29)."""
