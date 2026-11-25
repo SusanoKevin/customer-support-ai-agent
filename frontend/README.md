@@ -1,6 +1,6 @@
 # Frontend
 
-Next.js client for the support agent: chat, voice and the observability drawer. See the root `README.md` for the whole system. Run the backend on port 8000 first.
+Next.js client for the support agent: a floating support chat on a mock product page, with live voice from the mic button and an observability view. See the root `README.md` for the whole system. Run the backend on port 8000 first.
 
 ```bash
 npm install
@@ -12,9 +12,10 @@ npx tsc --noEmit && npm run lint
 Set `NEXT_PUBLIC_API_BASE` to point at a deployed backend (default `http://localhost:8000`). It is inlined at build time, so never put a secret in it.
 
 ```
-app/page.tsx                          renders SupportConsole
-components/SupportConsole.tsx         header, Chat/Voice switch, one agent turn runner shared by chat and voice
-components/chat/                      Composer, MessageBubble, StepIndicator (status events), ToolCard, EscalationBanner
+app/page.tsx                          mock product landing page (fictional Acme Projects) with the widget on top
+components/SupportWidget.tsx          floating launcher and panel (chat, voice, trace views), one agent turn runner shared by chat and voice
+components/chat/                      Composer (with the mic that starts a call), MessageBubble, StepIndicator (status events), ToolCard, EscalationBanner
+components/voice/useVoiceCall.ts      call state, start and stop; owned by the widget so the mic starts audio inside its click
 components/voice/VoicePanel.tsx       Start/End call, status, transcript
 components/voice/Waveform.tsx         canvas from an AnalyserNode (mic while listening, agent while speaking)
 components/observability/TraceDrawer.tsx  latency, tokens and cost per step; turn and session totals
