@@ -12,7 +12,7 @@ npx tsc --noEmit && npm run lint
 Set `NEXT_PUBLIC_API_BASE` to point at a deployed backend (default `http://localhost:8000`). It is inlined at build time, so never put a secret in it.
 
 ```
-app/page.tsx                          mock product landing page (fictional Acme Projects) with the widget on top
+app/page.tsx                          landing page about the agent (features, demo accounts) with the widget on top
 components/SupportWidget.tsx          floating launcher and panel (chat, voice, trace views), one agent turn runner shared by chat and voice
 components/chat/                      Composer (with the mic that starts a call), MessageBubble, StepIndicator (status events), ToolCard, EscalationBanner
 components/voice/useVoiceCall.ts      call state, start and stop; owned by the widget so the mic starts audio inside its click

@@ -86,7 +86,7 @@ export function SupportWidget() {
   const lastIndex = conversation.messages.length - 1;
   const lastPrompt = conversation.lastPrompt;
   const retry = lastPrompt ? () => send(lastPrompt) : undefined;
-  const title = view === "voice" ? "Voice call" : "Acme Support";
+  const title = view === "voice" ? "Voice call" : "Support Agent";
 
   return (
     <>
@@ -102,7 +102,7 @@ export function SupportWidget() {
                 <path d="M15 6l-6 6 6 6" />
               </IconButton>
             ) : (
-              <div className="flex size-8 items-center justify-center rounded-lg bg-accent text-sm font-bold text-on-accent">A</div>
+              <div className="flex size-8 items-center justify-center rounded-lg bg-accent text-sm font-bold text-on-accent">S</div>
             )}
             <div className="min-w-0">
               <h2 className="text-sm font-semibold">{title}</h2>
