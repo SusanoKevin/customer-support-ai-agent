@@ -2,7 +2,7 @@
 
 A support agent for a SaaS billing desk, with streaming chat, live two-way voice, retrieval over policy documents with confidence guardrails, chained tools that can issue real (mock) refunds, and an observability drawer that shows every step's latency, tokens and cost.
 
-- **Live demo:** _URL added after deploy_
+- **Live demo:** https://customer-support-ai-agent-nine.vercel.app (the backend sleeps when idle on the free tier, so the first reply can take up to a minute)
 - **Walkthrough video:** _Loom link added after recording_
 
 Runs entirely on free tiers: Gemini API, Supabase (Postgres + pgvector), Render and Vercel.
