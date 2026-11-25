@@ -6,6 +6,18 @@ from dataclasses import dataclass
 from app.rag.retriever import Chunk
 
 CITATION = re.compile(r"\[(\S+?:\d+:\d+)\]")  # e.g. [refunds:1:0]
+CHUNK_ID = re.compile(r"[a-z0-9_-]+:\d+:\d+")
+BRACKET_GROUP = re.compile(r"\[([^\[\]]*)\]")
+
+
+def normalize_citations(answer: str) -> str:
+    """Rewrite a bracket that mixes ids with other text, like [refunds:8:0, account facts], as [refunds:8:0].
+
+    Without this the gate never sees the id inside, and the customer sees a malformed chip (log L37)."""
+    def clean(match: re.Match[str]) -> str:
+        ids = CHUNK_ID.findall(match.group(1))
+        return "".join(f"[{i}]" for i in ids) if ids else match.group(0)
+    return BRACKET_GROUP.sub(clean, answer)
 
 
 @dataclass(frozen=True)

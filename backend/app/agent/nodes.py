@@ -11,7 +11,7 @@ from typing import Any
 
 from app.agent import templates
 from app.agent.deps import Deps
-from app.agent.guardrails import grounding_gate, retrieval_gate
+from app.agent.guardrails import grounding_gate, normalize_citations, retrieval_gate
 from app.agent.llm import Usage
 from app.agent.state import (
     ACCOUNT_INTENTS, ACTION_INTENTS, MAX_DISPUTES, MAX_IDENTITY_ATTEMPTS, AgentState, Node, recent_turns,
@@ -30,6 +30,8 @@ REFUND_REASON_MAX_CHARS = 280
 REFUND_REASON_MIN_CHARS = 12  # shorter messages ("yes", "do it") say nothing a reviewer can use
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 DIGIT_RUN = re.compile(r"\b\d{4,}\b")
+MIN_REFUND_USD = 0.01
+NEGATIVE_AMOUNT = re.compile(r"(?<![\w-])-\s*\$?\s*\d|\$\s*-\s*\d")  # "-20", "-$20", "$-20"; not "double-charge"
 # Declines that policy routes to a person rather than explaining and moving on.
 ESCALATE_ON_DECLINE = {
     "over_tier_limit": "over_tier_limit",
@@ -227,12 +229,20 @@ def _refund_request(state: AgentState, charges: list[dict[str, Any]]) -> AgentSt
             return _escalate(state, "charge_dispute_unresolved")
         return _reply(state, templates.charge_not_found(charges), last_was_refusal=True)
     state = replace(state, focus_charge_id=target["charge_id"], target_charge_id=target["charge_id"])
-    if not c.amount_usd:
+    if not _clear_amount(c.amount_usd, state.user_message):
         # Asking for an amount the window guard would refuse anyway only stalls the customer (live sweep, S4.3).
         if not target["in_refund_window"]:
             return _escalate(state, "outside_refund_window")
         return _reply(state, templates.ask_amount(target))
     return _to(state, Node.ISSUE_REFUND)
+
+
+def _clear_amount(amount_usd: float | None, message: str) -> bool:
+    """A refund amount the customer clearly asked for. The classifier drops a minus sign (log L35), and an
+    amount under a cent rounds to $0.00, which issue_refund rejects as a tool error (log L36)."""
+    if amount_usd is None or round(amount_usd, 2) < MIN_REFUND_USD:
+        return False
+    return NEGATIVE_AMOUNT.search(message) is None
 
 
 def business_days_between(start: date, end: date) -> int:
@@ -376,8 +386,9 @@ async def _grounded_answer(state: AgentState, deps: Deps) -> tuple[str | None, t
     for _ in range(2):
         reply = await deps.llm.generate(templates.RESPOND_SYSTEM, prompt)
         usage = (*usage, reply.usage)
-        if grounding_gate(reply.value, list(state.chunks)).passed:
-            return reply.value, usage
+        answer = normalize_citations(reply.value)
+        if grounding_gate(answer, list(state.chunks)).passed:
+            return answer, usage
     return None, usage
 
 

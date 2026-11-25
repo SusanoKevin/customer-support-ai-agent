@@ -76,8 +76,8 @@ def make_deps(*script: Classification, answers=None, failure_rate=0.0, retriever
     )
 
 
-async def turn(deps: Deps, sid: str = "session-0001") -> list[Event]:
-    events = [e async for e in run_turn(sid, "customer message", deps)]
+async def turn(deps: Deps, sid: str = "session-0001", message: str = "customer message") -> list[Event]:
+    events = [e async for e in run_turn(sid, message, deps)]
     assert isinstance(events[-1], DoneEvent)  # G6
     return events
 
@@ -378,6 +378,38 @@ async def test_follow_up_amount_applies_to_the_charge_under_discussion():  # S4.
     assert "How much" in text(first)
     second = await turn(deps)
     assert tool(second, "issue_refund").input["charge_id"] == "ch_d1"
+
+
+async def test_negative_amount_asks_for_the_amount_instead_of_refunding():  # L35 live
+    deps = make_deps(C("refund_request", amount_usd=20, charge_ref="in_d1", **DEV))
+    events = await turn(deps, message="Refund $-20 on in_d1, dev@example.com 1881")
+    assert "issue_refund" not in tools(events)
+    assert "How much" in text(events)
+
+
+async def test_amount_that_rounds_to_zero_asks_for_the_amount():  # L36 live
+    deps = make_deps(C("refund_request", amount_usd=0.004, charge_ref="in_d1", **DEV))
+    events = await turn(deps)
+    assert "issue_refund" not in tools(events)
+    assert escalation(events) is None
+    assert "How much" in text(events)
+
+
+async def test_hyphenated_text_is_not_read_as_a_negative_amount():  # L35 guard stays narrow
+    deps = make_deps(C("refund_request", amount_usd=30, **MAYA))
+    events = await turn(deps, message="Refund $30 for the double-charge, maya@example.com 4242")
+    assert tool(events, "issue_refund").input["amount_usd"] == 30
+
+
+async def test_malformed_citation_group_is_cleaned_before_streaming():  # L37 live
+    events = await turn(make_deps(C("policy_question"), answers=["Up to $50 [refunds:1:0, account facts]."]))
+    assert text(events) == "Up to $50 [refunds:1:0]."
+
+
+async def test_unknown_id_inside_a_malformed_group_still_fails_the_gate():  # L37
+    deps = make_deps(C("policy_question"), answers=["Yes [refunds:1:0] and [plans:9:0, account facts].",
+                                                    "Still [plans:9:0; facts]."])
+    assert escalation(await turn(deps)).reason == "uncited_answer"
 
 
 # --- review findings (log B1 to B6) ----------------------------------------

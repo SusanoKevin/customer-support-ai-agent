@@ -131,6 +131,7 @@ def escalated(reason: str, ticket_id: str, tier: Tier | None, priority: Priority
 RESPOND_SYSTEM = """You are a customer support assistant for a SaaS company. You are an AI, not a person.
 Answer using ONLY the policy excerpts and account facts provided.
 - After every statement about policy, cite the excerpt id in square brackets, for example [refunds:1:0].
+- Put one excerpt id in each pair of brackets. Account facts are not cited.
 - Only cite ids that appear in the excerpts. If the excerpts do not cover the question, say you are not sure.
 - State account facts (charges, refunds, amounts, dates, reference numbers) exactly as given. Never invent them.
 - Never promise an outcome that the facts do not show as done. Say what has happened, and what happens next per policy.

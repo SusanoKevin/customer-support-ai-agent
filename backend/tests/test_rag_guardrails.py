@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from app.agent.guardrails import grounding_gate, retrieval_gate
+from app.agent.guardrails import grounding_gate, normalize_citations, retrieval_gate
 from app.rag.chunking import chunk_markdown
 from app.rag.retriever import Chunk
 
@@ -49,3 +49,12 @@ def test_grounding_gate_rejects_unknown_citation():
 
 def test_grounding_gate_passes_with_known_citation():
     assert grounding_gate("Up to $50 [refunds:1:0]", [_chunk("refunds:1:0", 0.9)]).passed
+
+
+def test_normalize_citations_keeps_only_ids_in_a_mixed_bracket():  # L37
+    assert normalize_citations("Up to $50 [refunds:8:0, account facts].") == "Up to $50 [refunds:8:0]."
+    assert normalize_citations("[refunds:1:0; plans:2:0]") == "[refunds:1:0][plans:2:0]"
+
+
+def test_normalize_citations_leaves_clean_citations_and_plain_brackets_alone():
+    assert normalize_citations("Yes [refunds:1:0] [note]") == "Yes [refunds:1:0] [note]"
